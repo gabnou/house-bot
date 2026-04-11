@@ -7,6 +7,10 @@ mkdir -p "$LOG_DIR"
 # Maximum size of a single log file before rotation (default: 10 MB)
 LOG_MAX_BYTES=${LOG_MAX_BYTES:-10485760}
 
+# Read LOG_LEVEL from .env (default: info) and convert to lowercase for uvicorn
+LOG_LEVEL=$(grep -E '^LOG_LEVEL=' "$PROJECT_DIR/.env" 2>/dev/null | cut -d= -f2 | tr '[:upper:]' '[:lower:]')
+LOG_LEVEL=${LOG_LEVEL:-info}
+
 check_model() {
     echo "🔍 Checking Ollama model..."
 
@@ -84,7 +88,7 @@ start() {
     if [ -f "$LOG_DIR/fastapi.pid" ] && kill -0 $(cat "$LOG_DIR/fastapi.pid") 2>/dev/null; then
         echo "✅ FastAPI was already running"
     else
-        nohup bash -c "cd '$PROJECT_DIR/bot' && '$PROJECT_DIR/venv/bin/python' -m uvicorn main:app --port 8000" \
+        nohup bash -c "cd '$PROJECT_DIR/bot' && '$PROJECT_DIR/venv/bin/python' -m uvicorn main:app --port 8000 --log-level $LOG_LEVEL" \
             > "$LOG_DIR/fastapi.log" 2>&1 &
         echo $! > "$LOG_DIR/fastapi.pid"
         echo "✅ FastAPI started (PID $(cat $LOG_DIR/fastapi.pid))"
@@ -137,7 +141,7 @@ watchdog_loop() {
             FASTAPI_PID=$(cat "$LOG_DIR/fastapi.pid")
             if ! kill -0 "$FASTAPI_PID" 2>/dev/null; then
                 echo "$(date '+%Y-%m-%d %H:%M:%S') ⚠️  FastAPI died (PID $FASTAPI_PID) — restarting..." >> "$LOG_DIR/watchdog.log"
-                nohup bash -c "cd '$PROJECT_DIR/bot' && '$PROJECT_DIR/venv/bin/python' -m uvicorn main:app --port 8000" \
+                nohup bash -c "cd '$PROJECT_DIR/bot' && '$PROJECT_DIR/venv/bin/python' -m uvicorn main:app --port 8000 --log-level $LOG_LEVEL" \
                     >> "$LOG_DIR/fastapi.log" 2>&1 &
                 echo $! > "$LOG_DIR/fastapi.pid"
                 echo "$(date '+%Y-%m-%d %H:%M:%S') ✅ FastAPI restarted (PID $!)" >> "$LOG_DIR/watchdog.log"

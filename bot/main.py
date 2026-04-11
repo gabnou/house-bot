@@ -13,12 +13,16 @@ from dotenv import load_dotenv
 load_dotenv(dotenv_path=Path(__file__).parent.parent / '.env')
 
 # Configure logging
+_log_level = getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO)
 logging.basicConfig(
-    level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO),
+    level=_log_level,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
     force=True,
 )
+# Explicitly set the level on all app loggers so uvicorn cannot override it
+for _name in ("__main__", "main", "intent_parser", "db_handler", "weather", "calendar_handler", "scheduler"):
+    logging.getLogger(_name).setLevel(_log_level)
 logger = logging.getLogger(__name__)
 
 # Third-party and local imports
@@ -32,7 +36,7 @@ from db_handler import (
     show_list, clear_list,
     recent_bought, get_pending_items
 )
-from intent_parser import parse_intent, detect_category, validate_transcription
+from intent_parser import parse_intent, detect_category, validate_transcription, detect_language, translate_to_english, translate_from_english, classify_intent_category
 from weather import get_weather_now, get_weather_forecast, get_weather_hours, get_weather_hours_day
 from calendar_handler import (
     show_events, add_event,
@@ -150,12 +154,11 @@ async def transcribe_audio(file: UploadFile = File(...)):
         segments, info = _whisper_model.transcribe(
             tmp_path,
             beam_size=5,
-            language="en",
             vad_filter=True,
             temperature=0,
         )
         text = " ".join(seg.text.strip() for seg in segments).strip()
-        logger.info("🎤 Transcribed [%s]: %s", info.language, text)
+        logger.info("🎤 Transcribed [%s, prob=%.2f]: %s", info.language, info.language_probability, text)
         valid = validate_transcription(text) if text else False
         if not valid:
             logger.info("🎤 Invalid transcription, discarded: '%s'", text)
@@ -384,21 +387,92 @@ async def handle_message(msg: Message):
         )
 
     elif action == "unknown":
-        llm_reply = intent.get("reply", "I couldn't understand, please try again!")
-        suggestion = ""
-        if detect_category(text) is None:
-            suggestion = (
-                "💡 *Tip:* start your message with a keyword:\n"
-                "• *shopping* show list\n"
-                "• *weather* forecast tomorrow\n"
-                "• *calendar* events this week\n"
-            )
-        reply = (
-            "🤖 I'm not sure which of the 3 things I can do you mean. 😊\n"
-            f"{suggestion}"
-            "\n🤖 Here's my best answer:\n"
-            f"{llm_reply}"
+        # --- Language fallback: detect if the message is in a non-English language ---
+        lang_info = detect_language(text)
+        detected_lang = lang_info.get("language", "").strip() if lang_info else ""
+        confidence = lang_info.get("confidence", "low").strip().lower() if lang_info else "low"
+        is_foreign = (
+            detected_lang
+            and detected_lang.lower() != "english"
+            and confidence in ("high", "medium")
         )
+
+        if is_foreign:
+            logger.info("🌐 Detected language: %s (%s confidence) — attempting translation", detected_lang, confidence)
+            translated = translate_to_english(text, detected_lang)
+            if translated:
+                logger.info("🌐 Translated to English: %s", translated)
+                # Track the text that will be used for re-processing
+                effective_text = translated
+                # Re-run intent through pre_route + LLM with the English translation
+                re_intent = pre_route(translated)
+                if not re_intent:
+                    re_intent = parse_intent(translated)
+                re_action = re_intent.get("action", "unknown")
+
+                # If still unknown, try to classify the intent by affinity and prepend the keyword
+                if re_action in ("unknown", "error") and detect_category(translated) is None:
+                    classified = classify_intent_category(translated)
+                    if classified:
+                        logger.info("🏷️ Classified translated text as '%s' — retrying with keyword", classified)
+                        prefixed = f"{classified} {translated}"
+                        re_intent = pre_route(prefixed)
+                        if not re_intent:
+                            re_intent = parse_intent(prefixed)
+                        re_action = re_intent.get("action", "unknown")
+                        if re_action not in ("unknown", "error"):
+                            effective_text = prefixed
+
+                if re_action != "unknown" and re_action != "error":
+                    # Successful re-parse — recurse with the text that actually worked
+                    translated_msg = Message(sender=msg.sender, text=effective_text)
+                    result = await handle_message(translated_msg)
+                    en_reply = result.get("reply", "")
+                    notification = result.get("notification")
+                    # Translate the reply back to the detected language
+                    if en_reply:
+                        translated_reply = translate_from_english(en_reply, detected_lang)
+                        reply = translated_reply if translated_reply else en_reply
+                    else:
+                        reply = en_reply
+                    return {"reply": reply, "notification": notification}
+                else:
+                    # Still unknown after translation
+                    reply = (
+                        f"🌐 I detected your message might be in *{detected_lang}* and tried to translate it, "
+                        f"but I still couldn't understand the request.\n\n"
+                        "💡 *Tip:* start your message with a keyword (English examples):\n"
+                        "• *shopping* show list\n"
+                        "• *weather* forecast tomorrow\n"
+                        "• *calendar* events this week\n"
+                    )
+            else:
+                # Translation failed
+                reply = (
+                    f"🌐 I detected your message might be in *{detected_lang}*, "
+                    "but I was unable to translate it. Please try again in English.\n\n"
+                    "💡 *Tip:* start your message with a keyword (English examples):\n"
+                    "• *shopping* show list\n"
+                    "• *weather* forecast tomorrow\n"
+                    "• *calendar* events this week\n"
+                )
+        else:
+            # Original unknown handler (English or low-confidence detection)
+            llm_reply = intent.get("reply", "I couldn't understand, please try again!")
+            suggestion = ""
+            if detect_category(text) is None:
+                suggestion = (
+                    "💡 *Tip:* start your message with a keyword:\n"
+                    "• *shopping* show list\n"
+                    "• *weather* forecast tomorrow\n"
+                    "• *calendar* events this week\n"
+                )
+            reply = (
+                "🤖 I'm not sure which of the 3 things I can do you mean. 😊\n"
+                f"{suggestion}"
+                "\n🤖 Here's my best answer:\n"
+                f"{llm_reply}"
+            )
 
     else:
         reply = (

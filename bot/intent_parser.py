@@ -26,6 +26,39 @@ def detect_category(text: str) -> str | None:
     return None
 
 
+def classify_intent_category(text: str) -> str | None:
+    """Use the LLM to classify translated text into shopping, calendar, weather or none.
+    This is a fallback for when detect_category() fails on translated text that
+    doesn't start with an exact keyword (e.g. 'forecast tomorrow' instead of 'weather tomorrow')."""
+    prompt = (
+        "Classify the following message into one of these categories: shopping, weather, calendar.\n"
+        "The message may be a translation from another language and may not start with the exact keyword, "
+        "but its intent should clearly relate to one of these domains:\n"
+        "- **shopping**: buying groceries, adding/removing items from a shopping list, "
+        "what to buy, provisions, supplies, supermarket, store.\n"
+        "- **weather**: forecast, temperature, rain, sun, wind, climate, meteorology, conditions.\n"
+        "- **calendar**: events, appointments, schedule, agenda, meetings, dates, reminders.\n\n"
+        "If the message clearly belongs to one of these, respond ONLY with the category name "
+        "(shopping, weather, or calendar). If it does not clearly belong to any, respond with \"none\".\n\n"
+        f"Message: \"{text}\"\nCategory:"
+    )
+    try:
+        response = requests.post(OLLAMA_URL, json={
+            "model": MODEL,
+            "prompt": prompt,
+            "stream": False,
+            "options": {"temperature": 0, "num_predict": 10},
+        }, timeout=15)
+        answer = response.json().get("response", "").strip().lower().strip('"').strip()
+        logger.debug("🏷️ classify_intent_category → '%s' for: %s", answer, text)
+        if answer in ("shopping", "weather", "calendar"):
+            return answer
+        return None
+    except Exception as e:
+        logger.warning("⚠️ classify_intent_category error: %s", e)
+        return None
+
+
 def get_system_prompt() -> str:
     return """You are a domestic assistant named "house-bot".
 You will receive messages generally in English, but you might also receive them in other languages.
@@ -339,6 +372,76 @@ def _parse_raw(raw: str) -> dict:
     if not match:
         raise ValueError(f"No JSON found in response: {raw}")
     return json.loads(match.group())
+
+
+def detect_language(text: str) -> dict:
+    """Ask the LLM to detect the language of a message.
+    Returns {"language": "...", "confidence": "high"|"medium"|"low"} or None on error."""
+    prompt = (
+        "Detect the language of the following text. "
+        "Respond ONLY with a valid JSON object with two fields:\n"
+        '- "language": the full English name of the language (e.g. "Spanish", "Italian", "French", "German").\n'
+        '- "confidence": "high", "medium", or "low".\n'
+        "If the text is in English, respond with {\"language\": \"English\", \"confidence\": \"high\"}.\n\n"
+        f"Text: \"{text}\"\nResponse:"
+    )
+    try:
+        response = requests.post(OLLAMA_URL, json={
+            "model": MODEL,
+            "prompt": prompt,
+            "stream": False,
+            "options": {"temperature": 0, "num_predict": 50},
+        }, timeout=30)
+        raw = response.json().get("response", "").strip()
+        logger.debug("🌐 detect_language raw → %s", raw)
+        return _parse_raw(raw)
+    except Exception as e:
+        logger.warning("⚠️ detect_language error: %s", e)
+        return None
+
+
+def translate_to_english(text: str, source_language: str) -> str | None:
+    """Translate text from a detected language to English using the LLM."""
+    prompt = (
+        f"Translate the following {source_language} text to English. "
+        "Respond ONLY with the English translation, nothing else.\n\n"
+        f"Text: \"{text}\"\nTranslation:"
+    )
+    try:
+        response = requests.post(OLLAMA_URL, json={
+            "model": MODEL,
+            "prompt": prompt,
+            "stream": False,
+            "options": {"temperature": 0.1},
+        }, timeout=60)
+        result = response.json().get("response", "").strip().strip('"')
+        logger.debug("🌐 translate_to_english → %s", result)
+        return result if result else None
+    except Exception as e:
+        logger.warning("⚠️ translate_to_english error: %s", e)
+        return None
+
+
+def translate_from_english(text: str, target_language: str) -> str | None:
+    """Translate an English response to the target language using the LLM."""
+    prompt = (
+        f"Translate the following English text to {target_language}. "
+        "Respond ONLY with the translation, nothing else.\n\n"
+        f"Text: \"{text}\"\nTranslation:"
+    )
+    try:
+        response = requests.post(OLLAMA_URL, json={
+            "model": MODEL,
+            "prompt": prompt,
+            "stream": False,
+            "options": {"temperature": 0.1},
+        }, timeout=60)
+        result = response.json().get("response", "").strip().strip('"')
+        logger.debug("🌐 translate_from_english → %s", result)
+        return result if result else None
+    except Exception as e:
+        logger.warning("⚠️ translate_from_english error: %s", e)
+        return None
 
 
 def validate_transcription(text: str) -> bool:

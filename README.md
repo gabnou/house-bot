@@ -1,7 +1,7 @@
 # HouseBot
 
 
-Domestic WhatsApp bot for shared management of a shopping list between multiple partners, weather, and a shared Google Calendar. Runs entirely locally on your own computer — no data is sent to external clouds except for explicitly configured third-party APIs.
+Domestic WhatsApp bot for shared management of a shopping list between multiple partners, weather, and a shared Google Calendar. It also supports speech-to-text capabilities, automatically transcribing voice messages using a local model. Runs entirely locally on your own computer — no data is sent to external clouds except for explicitly configured third-party APIs.
 
 **Tested on macOS (MacBook).** Local setup steps and requirements may differ on Windows or Linux systems, especially regarding Python, Node.js, and hardware compatibility. Adjustments may be needed for your specific architecture.
 
@@ -12,6 +12,10 @@ Domestic WhatsApp bot for shared management of a shopping list between multiple 
 
 **First request warm-up:** The LLM model is loaded into memory on demand — the very first message after starting the bot (or after a period of inactivity) will take noticeably longer to respond while Ollama loads the model. Subsequent messages are fast. By default, Ollama keeps the model in memory for **5 minutes** after the last request, then unloads it to free RAM. This timeout can be adjusted with the `OLLAMA_KEEP_ALIVE` environment variable (e.g. `OLLAMA_KEEP_ALIVE=30m` to extend it to 30 minutes).
 
+**Prompt tuning:** Since LLMs are non-deterministic, the bot's accuracy may vary depending on the model you run. If you notice the bot misinterpreting commands or producing unexpected results, you can fine-tune the prompts located in `bot/intent_parser.py`. Adding more detailed or specific prompts will help the bot better understand user intent and improve overall accuracy.
+
+**Multi-language support:** The bot expects English as the default language, but it can communicate in any language — including voice messages. When a text or audio message is not understood, the bot uses the LLM to detect the source language. If a non-English language is identified, the message is automatically translated to English, processed through the normal command pipeline, and the response is translated back into the detected language. This makes the bot accessible to users in any language without additional configuration. Note that language detection and translation require multiple LLM calls, which will noticeably slow down response times on machines with limited RAM where the model cannot stay fully loaded in memory.
+
 ---
 
 ## Features
@@ -20,6 +24,7 @@ Domestic WhatsApp bot for shared management of a shopping list between multiple 
 - **Weather** — current conditions and forecasts via OpenWeatherMap (primary) with Open-Meteo fallback
 - **Google Calendar** — read, add, edit and delete events (calendar configurable via `.env`)
 - **Voice messages** — voice notes (PTT) automatically transcribed with faster-whisper (local), validated by the LLM and processed as normal commands
+- **Multi-language support** — the bot is English by default to keep it international, but if a message in a different language is not understood, the bot automatically detects the language, translates the message to English, re-runs the command pipeline, and replies in the detected language
 - **Morning briefing** — automatic message at 07:30 with weather, today's events and motivational quote
 - **Free conversation** — LLM-generated replies for messages not recognized as commands
 
