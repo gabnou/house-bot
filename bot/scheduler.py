@@ -9,7 +9,7 @@ import time
 import requests
 from datetime import datetime, date
 from weather import get_morning_briefing
-from intent_parser import MODEL, OLLAMA_URL
+from intent_parser import MODEL, OLLAMA_URL, translate_from_english
 from calendar_handler import show_events
 
 from dotenv import load_dotenv
@@ -26,6 +26,7 @@ FASTAPI_URL = "http://localhost:8000"
 BRIEFING_HOUR = 7
 BRIEFING_MINUTE = 30
 WINDOW_WAKEUP = 30  # send if within 30min of target time (7:30 - 8:00)
+BRIEFING_LANGUAGE = os.getenv("BRIEFING_LANGUAGE", "").strip() or None
 
 BRIEFING_LOCK_FILE = Path(__file__).parent.parent / "logs" / "briefing_sent.lock"
 
@@ -109,6 +110,15 @@ def send_briefing():
     logger.info("💭 Quote: %s", quote[:50] if quote else 'EMPTY')
 
     text = f"{weather}\n\n{calendar}\n\n💭 {quote}"
+
+    if BRIEFING_LANGUAGE:
+        logger.info("🌐 Translating briefing to %s...", BRIEFING_LANGUAGE)
+        translated = translate_from_english(text, BRIEFING_LANGUAGE)
+        if translated:
+            text = translated
+        else:
+            logger.warning("⚠️ Briefing translation to %s failed, sending in English", BRIEFING_LANGUAGE)
+
     logger.info("📤 Total text: %d characters", len(text))
 
     try:

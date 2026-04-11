@@ -25,7 +25,7 @@ Domestic WhatsApp bot for shared management of a shopping list between multiple 
 - **Google Calendar** — read, add, edit and delete events (calendar configurable via `.env`)
 - **Voice messages** — voice notes (PTT) automatically transcribed with faster-whisper (local), validated by the LLM and processed as normal commands
 - **Multi-language support** — the bot is English by default to keep it international, but if a message in a different language is not understood, the bot automatically detects the language, translates the message to English, re-runs the command pipeline, and replies in the detected language
-- **Morning briefing** — automatic message at 07:30 with weather, today's events and motivational quote
+- **Morning briefing** — automatic message at 07:30 with weather, today's events and motivational quote. The briefing is in English by default; set `BRIEFING_LANGUAGE` in `.env` (e.g. `Spanish`, `Italian`) to receive it in a different language
 - **Free conversation** — LLM-generated replies for messages not recognized as commands
 
 ---
