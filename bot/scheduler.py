@@ -23,9 +23,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 FASTAPI_URL = "http://localhost:8000"
-BRIEFING_HOUR = 7
-BRIEFING_MINUTE = 30
-WINDOW_WAKEUP = 30  # send if within 30min of target time (7:30 - 8:00)
+_briefing_time = os.getenv("BRIEFING_TIME", "07:30").strip()
+try:
+    _bt_parts = _briefing_time.split(":")
+    BRIEFING_HOUR = int(_bt_parts[0])
+    BRIEFING_MINUTE = int(_bt_parts[1])
+except (ValueError, IndexError):
+    BRIEFING_HOUR = 7
+    BRIEFING_MINUTE = 30
+WINDOW_WAKEUP = 30  # send if within 30min of target time
 BRIEFING_LANGUAGE = os.getenv("BRIEFING_LANGUAGE", "").strip() or None
 
 BRIEFING_LOCK_FILE = Path(__file__).parent.parent / "logs" / "briefing_sent.lock"
