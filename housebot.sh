@@ -4,6 +4,9 @@ PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOG_DIR="$PROJECT_DIR/logs"
 mkdir -p "$LOG_DIR"
 
+# Maximum size of a single log file before rotation (default: 10 MB)
+LOG_MAX_BYTES=${LOG_MAX_BYTES:-10485760}
+
 check_model() {
     echo "🔍 Checking Ollama model..."
 
@@ -43,8 +46,30 @@ except:
     fi
 }
 
+rotate_logs() {
+    local rotated=0
+
+    # Delete .log.old files older than 3 days
+    find "$LOG_DIR" -maxdepth 1 -name "*.log.old" -mtime +3 -delete
+
+    for log in "$LOG_DIR"/fastapi.log "$LOG_DIR"/bridge.log "$LOG_DIR"/scheduler.log "$LOG_DIR"/watchdog.log; do
+        [ -f "$log" ] || continue
+        local size
+        size=$(wc -c < "$log")
+        if [ "$size" -gt "$LOG_MAX_BYTES" ]; then
+            mv "$log" "${log%.log}.log.old"
+            touch "$log"
+            echo "🔄 Rotated $(basename $log) (${size} bytes → archived as $(basename ${log%.log}.log.old))"
+            rotated=$((rotated + 1))
+        fi
+    done
+    [ "$rotated" -eq 0 ] && echo "✅ Logs within size limit — no rotation needed."
+}
+
 start() {
     echo "🚀 Starting HouseBot..."
+
+    rotate_logs
 
     # Check that Ollama is reachable
     if ! curl -s http://localhost:11434 > /dev/null 2>&1; then
@@ -253,10 +278,11 @@ case "$1" in
     status)         status ;;
     logs-live)      logs_live ;;
     logs)           logs ;;
+    logs-rotate)    rotate_logs ;;
     qr)             qr ;;
     watchdog-start) start_watchdog ;;
     watchdog-stop)  stop_watchdog ;;
     *)
-        echo "Usage: ./housebot.sh [start|stop|restart|status|logs|logs-live|qr|watchdog-start|watchdog-stop]"
+        echo "Usage: ./housebot.sh [start|stop|restart|status|logs|logs-live|logs-rotate|qr|watchdog-start|watchdog-stop]"
         ;;
 esac

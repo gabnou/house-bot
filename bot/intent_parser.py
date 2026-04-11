@@ -147,7 +147,7 @@ Available actions:
 - calendar_edit: {{"action": "calendar_edit", "title": "...", "new_title": null, "new_date": null, "new_time": null, "new_location": null}}
 - calendar_details: {{"action": "calendar_details", "title": "..."}}
 
-IMPORTANT: Words like "appointment", "event", "reminder", "meeting" are generic and are NOT part of the title. The title is the specific event name (e.g. "Rossella", "dinner with Gael", "doctor visit").
+IMPORTANT: Words like "appointment", "event", "reminder", "meeting" are generic and are NOT part of the title. The title is the specific event name (e.g. "concert of Pixies", "dinner with Mark", "doctor visit").
 
 Examples:
 Message: "calendar"
@@ -204,11 +204,11 @@ Response: {{"action": "calendar_period", "start_date": "{current_year}-04-09", "
 Message: "calendar what do I have on march 15th"
 Response: {{"action": "calendar_period", "start_date": "{current_year}-03-15", "end_date": "{current_year}-03-15"}}
 
-Message: "calendar add dinner with Gael friday april 3rd at 9pm"
-Response: {{"action": "calendar_add", "title": "dinner with Gael", "date": "{current_year}-04-03", "start_time": "21:00", "end_time": null, "location": null}}
+Message: "calendar add dinner with Mark friday april 3rd at 9pm"
+Response: {{"action": "calendar_add", "title": "dinner with Mark", "date": "{current_year}-04-03", "start_time": "21:00", "end_time": null, "location": null}}
 
-Message: "calendar delete dinner with Gael"
-Response: {{"action": "calendar_delete", "title": "dinner with Gael"}}
+Message: "calendar delete dinner with Mark"
+Response: {{"action": "calendar_delete", "title": "dinner with Mark"}}
 
 Message: "calendar move doctor visit to april 6th at 11am"
 Response: {{"action": "calendar_edit", "title": "doctor visit", "new_title": null, "new_date": "{current_year}-04-06", "new_time": "11:00", "new_location": null}}
@@ -216,8 +216,8 @@ Response: {{"action": "calendar_edit", "title": "doctor visit", "new_title": nul
 Message: "calendar move appointment Rossella from april 2nd to april 9th"
 Response: {{"action": "calendar_edit", "title": "Rossella", "new_title": null, "new_date": "{current_year}-04-09", "new_time": null, "new_location": null}}
 
-Message: "calendar details dinner with Gael"
-Response: {{"action": "calendar_details", "title": "dinner with Gael"}}
+Message: "calendar details dinner with Mark"
+Response: {{"action": "calendar_details", "title": "dinner with Mark"}}
 
 Respond ONLY with JSON, no additional text, no markdown, no explanations."""
 

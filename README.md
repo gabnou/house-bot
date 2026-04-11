@@ -154,6 +154,8 @@ Copy the example file and edit it:
 cp .env.example .env
 ```
 
+> **Security:** `.env` contains sensitive credentials (API keys, partner phone JIDs). It is already listed in `.gitignore` and must **never** be committed or shared. Keep it private.
+
 Edit `.env` with your actual values:
 
 ```env
@@ -249,6 +251,7 @@ chmod +x housebot.sh
 ./housebot.sh status     # show process status
 ./housebot.sh logs       # show recent logs for all processes
 ./housebot.sh logs-live  # follow all process logs in real time
+./housebot.sh logs-rotate # manually rotate logs (also runs automatically on start)
 ./housebot.sh qr         # follow bridge log in real time (for QR)
 ```
 
