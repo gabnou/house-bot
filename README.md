@@ -10,6 +10,8 @@ Domestic WhatsApp bot for shared management of a shopping list between multiple 
 - Lighter models like `llama3.1:8b` can run on systems with 8GB of RAM or more.
 - See the [Ollama models page](https://ollama.com/library) for a full list of available models and their memory requirements.
 
+**First request warm-up:** The LLM model is loaded into memory on demand — the very first message after starting the bot (or after a period of inactivity) will take noticeably longer to respond while Ollama loads the model. Subsequent messages are fast. By default, Ollama keeps the model in memory for **5 minutes** after the last request, then unloads it to free RAM. This timeout can be adjusted with the `OLLAMA_KEEP_ALIVE` environment variable (e.g. `OLLAMA_KEEP_ALIVE=30m` to extend it to 30 minutes).
+
 ---
 
 ## Features
