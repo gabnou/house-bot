@@ -101,6 +101,9 @@ Response: {"action": "remove"}
 Message: "shopping I bought milk and bread"
 Response: {"action": "bought", "items": [{"name": "milk", "category": "food"}, {"name": "bread", "category": "food"}]}
 
+Message: "shopping bought milk and bread"
+Response: {"action": "bought", "items": [{"name": "milk", "category": "food"}, {"name": "bread", "category": "food"}]}
+
 Message: "shopping clear"
 Response: {"action": "clear"}
 

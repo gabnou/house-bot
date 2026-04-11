@@ -1,13 +1,21 @@
 # HouseBot
 
-Domestic WhatsApp bot for shared management of shopping list, weather and Google Calendar. Runs entirely locally on a Mac — no data sent to external clouds except the explicitly configured third-party APIs.
+
+Domestic WhatsApp bot for shared management of a shopping list between multiple partners, weather, and a shared Google Calendar. Runs entirely locally on your own computer — no data is sent to external clouds except for explicitly configured third-party APIs.
+
+**Tested on macOS (MacBook).** Local setup steps and requirements may differ on Windows or Linux systems, especially regarding Python, Node.js, and hardware compatibility. Adjustments may be needed for your specific architecture.
+
+**Memory requirements depend on the LLM model you choose:**
+- For example, `mistral-small:22b` requires at least 16GB of RAM.
+- Lighter models like `llama3.1:8b` can run on systems with 8GB of RAM or more.
+- See the [Ollama models page](https://ollama.com/library) for a full list of available models and their memory requirements.
 
 ---
 
 ## Features
 
 - **Shopping list** — add, remove, view and manage by category (food, other, clothing, health)
-- **Weather** — current conditions and forecasts via AEMET (Spain) with Open-Meteo fallback
+- **Weather** — current conditions and forecasts via OpenWeatherMap (primary) with Open-Meteo fallback
 - **Google Calendar** — read, add, edit and delete events (calendar configurable via `.env`)
 - **Voice messages** — voice notes (PTT) automatically transcribed with faster-whisper (local), validated by the LLM and processed as normal commands
 - **Morning briefing** — automatic message at 07:30 with weather, today's events and motivational quote
@@ -31,7 +39,7 @@ FastAPI Server (Python)       ← bot/main.py
    ├── Transcribe (Whisper)   ← bot/main.py /transcribe → faster-whisper (local) + LLM validation
    ├── Intent Parser          ← bot/intent_parser.py  →  Ollama (local LLM)
    ├── DB Handler             ← bot/db_handler.py     →  SQLite (shopping_list.db)
-   ├── Weather                ← bot/weather.py        →  AEMET API (Spain) / Open-Meteo (fallback)
+   ├── Weather                ← bot/weather.py        →  OpenWeatherMap API / Open-Meteo (fallback)
    ├── Calendar Handler       ← bot/calendar_handler.py → Google Calendar API
    └── Scheduler              ← bot/scheduler.py      →  briefing 07:30
 ```
@@ -50,7 +58,7 @@ house-bot/
 │   ├── main.py                         ← FastAPI server
 │   ├── intent_parser.py                ← LLM parsing → JSON action
 │   ├── db_handler.py                   ← SQLite CRUD
-│   ├── weather.py                      ← AEMET + Open-Meteo integration
+│   ├── weather.py                      ← OpenWeatherMap + Open-Meteo integration
 │   ├── calendar_handler.py             ← Google Calendar integration
 │   ├── scheduler.py                    ← morning briefing
 │   └── schema.sql                      ← database schema
@@ -69,7 +77,6 @@ house-bot/
 
 ## Prerequisites
 
-- macOS (tested on macOS 14+)
 - [Homebrew](https://brew.sh) installed
 - Python 3.11+
 - Node.js 18+
@@ -156,18 +163,54 @@ OLLAMA_MODEL=mistral-small:22b          # Ollama model name
 GOOGLE_CALENDAR_NAME=Family             # exact name of the Google calendar
 CALENDAR_TIMEZONE=Europe/Madrid         # timezone for calendar events
 
-AEMET_API_KEY=<your-aemet-key>          # AEMET API key (free at opendata.aemet.es)
+OPENWEATHER_API_KEY=<your-key>          # OpenWeatherMap API key (free at openweathermap.org)
 
 LOG_LEVEL=INFO                          # log level: DEBUG, INFO, WARNING, ERROR
 
-# WhatsApp partner numbers (@lid format for bridge, @s.whatsapp.net for bot)
+# WhatsApp partner numbers (comma-separated; add as many as needed)
+# The documentation uses 2 partners as an example, but you can configure fewer or more
+# simply by adding or removing entries in the comma-separated lists below
 PARTNER_LID=XXXXXXXXXXXXXXX@lid,XXXXXXXXXXXXXXX@lid
 PARTNER_NET=XXXXXXXXXXX@s.whatsapp.net,XXXXXXXXXXX@s.whatsapp.net
 ```
 
 ### 8 — Find the WhatsApp partner JIDs
 
-The `@lid` format (for `PARTNER_LID`, used by the bridge) and `@s.whatsapp.net` format (for `PARTNER_NET`, used by the bot) can be found by adding a temporary log in the bridge and sending a message from both phones. The raw values are printed in the bridge log.
+The bridge and the bot use the `@lid` JID format to identify each partner. This value is assigned by WhatsApp and cannot be derived from the phone number — it must be discovered at runtime.
+
+**Step-by-step:**
+
+1. **Leave `PARTNER_LID` empty** in your `.env` file (or set it to a blank value). This temporarily disables the sender filter while the bridge is still fully functional:
+
+   ```env
+   PARTNER_LID=
+   ```
+
+2. **Start the bridge** (see [First WhatsApp Authentication](#first-whatsapp-authentication) if you haven't linked the number yet):
+
+   ```bash
+   cd bridge && node index.js
+   ```
+
+3. **Have each partner send any message** from their phone to the bot's number.
+
+4. **Check the bridge log** — every message from an unknown sender is logged like this:
+
+   ```
+   🚫 Message ignored from: 93119253061741@lid
+   ```
+
+   Each `@lid` value is the JID you need.
+
+5. **Update your `.env`** with the discovered values and restart:
+
+   ```env
+   PARTNER_LID=<jid1>@lid,<jid2>@lid
+   ```
+
+   Once set, the filter is active and only messages from the listed JIDs will be processed.
+
+> **Note:** Two partners are used throughout this documentation as an example, but the bot supports any number. Simply add or remove comma-separated entries in `PARTNER_LID` in your `.env` file — no code changes are required.
 
 ---
 

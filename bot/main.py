@@ -1,14 +1,18 @@
+# Standard library imports
 import sys
 import os
 import logging
 import tempfile
+import re as _re
 from pathlib import Path
 from difflib import SequenceMatcher
-sys.path.append(str(Path(__file__).parent))
+sys.path.append(str(Path(__file__).parent))  # Add bot/ to sys.path
 
+# Load environment variables
 from dotenv import load_dotenv
 load_dotenv(dotenv_path=Path(__file__).parent.parent / '.env')
 
+# Configure logging
 logging.basicConfig(
     level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -17,6 +21,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Third-party and local imports
 from fastapi import FastAPI, UploadFile, File
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
@@ -35,34 +40,31 @@ from calendar_handler import (
     event_details, show_events_period
 )
 
+# List of partner JIDs from env
 PARTNER = [
     jid.strip()
     for jid in os.getenv("PARTNER_LID", "").split(",")
     if jid.strip()
 ]
 
+# Actions that modify the list
 MODIFYING_ACTIONS = {"add", "remove", "bought", "clear"}
 
+# Fuzzy match threshold
 FUZZY_THRESHOLD = 0.82
 
-
+# Find pending items in text using substring or fuzzy match
 def match_items_in_text(text: str, pending_items: list) -> list:
-    """Return pending items found in message text via exact substring or fuzzy match.
-    Items are pre-sorted by length desc (from db), so multi-word items take priority.
-    FUZZY_THRESHOLD=0.82 tolerates 1-2 char typos without too many false positives."""
     text_lower = text.lower()
     words = text_lower.split()
     matched = []
-
     for item in pending_items:
         item_lower = item.lower()
-
-        # Fast path: exact substring
+        # Exact match
         if item_lower in text_lower:
             matched.append(item)
             continue
-
-        # Fuzzy path: slide a window of the same word count over the message
+        # Fuzzy match
         item_words = item_lower.split()
         n = len(item_words)
         for i in range(len(words) - n + 1):
@@ -70,12 +72,9 @@ def match_items_in_text(text: str, pending_items: list) -> list:
             if SequenceMatcher(None, item_lower, window).ratio() >= FUZZY_THRESHOLD:
                 matched.append(item)
                 break
-
     return matched
 
-
-import re as _re
-
+# Regex patterns for intent detection
 _PATTERN_SHOW_LIST = _re.compile(
     r'\b(show(?!\s+(calendar|events|weather))|list|grocery\s+list|shopping\s+list|what\'s\s+missing|groceries)\b',
     _re.IGNORECASE
@@ -84,35 +83,28 @@ _PATTERN_BOUGHT = _re.compile(
     r'\b(i\s+(bought|got|picked\s+up)|bought|got|purchased)\b',
     _re.IGNORECASE
 )
-
 _PATTERN_REMOVE = _re.compile(
     r'\b(remove|delete|drop|take\s+off|cross\s+off)\b',
     _re.IGNORECASE
 )
-
 _PATTERN_ADD = _re.compile(
     r'^\s*add\b',
     _re.IGNORECASE
 )
-
 _PATTERN_CALENDAR_TODAY = _re.compile(
     r'^(show\s+(calendar|events)|calendar|agenda|appointments|events(\s+today)?|today|what\s+do\s+i\s+have\s+today)$',
     _re.IGNORECASE
 )
 
-
+# Fast intent detection for simple messages
 def pre_route(text: str) -> dict | None:
-    """Return an intent directly for unambiguous messages, bypassing the LLM."""
     t = text.strip().lower()
-    # bought/remove are deterministic regardless of any category prefix
     if _PATTERN_BOUGHT.search(t):
         return {"action": "bought"}
     if _PATTERN_REMOVE.search(t):
         return {"action": "remove"}
-    # Bare calendar-like commands (exact match) before category check
     if _PATTERN_CALENDAR_TODAY.match(t):
         return {"action": "calendar_show", "days": 1, "offset_days": 0}
-    # If message starts with a category keyword, defer to focused LLM
     if detect_category(text) is not None:
         return None
     if _PATTERN_ADD.search(t):
@@ -121,10 +113,10 @@ def pre_route(text: str) -> dict | None:
         return {"action": "show", "category": None}
     return None
 
-
+# Global Whisper model instance
 _whisper_model: WhisperModel | None = None
 
-
+# FastAPI lifespan event: init DB and load model
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _whisper_model
@@ -135,19 +127,18 @@ async def lifespan(app: FastAPI):
     logger.info("🎤 Whisper ready.")
     yield
 
-
+# FastAPI app instance
 app = FastAPI(lifespan=lifespan)
 
-
+# Request models
 class Message(BaseModel):
     sender: str
     text: str
 
-
 class Broadcast(BaseModel):
     text: str
 
-
+# Audio transcription endpoint
 @app.post("/transcribe")
 async def transcribe_audio(file: UploadFile = File(...)):
     tmp_path = None
@@ -176,7 +167,7 @@ async def transcribe_audio(file: UploadFile = File(...)):
         if tmp_path and Path(tmp_path).exists():
             Path(tmp_path).unlink()
 
-
+# Broadcast message to all partners
 @app.post("/broadcast")
 async def broadcast(msg: Broadcast):
     import requests as req
@@ -190,19 +181,17 @@ async def broadcast(msg: Broadcast):
             logger.error("Broadcast error to %s: %s", number, e)
     return {"ok": True}
 
-
+# Main message handler endpoint
 @app.post("/message")
 async def handle_message(msg: Message):
     import time
     t0 = time.time()
     logger.info("📩 From %s: %s", msg.sender, msg.text)
-
     text = msg.text.strip()
     if not text:
         return {"reply": None, "notification": None}
-
     logger.debug("🔍 Received text: '%s'", text)
-
+    # Try fast intent detection, else use LLM
     intent = pre_route(text)
     if intent:
         logger.debug("⚡ pre_route match: %s", intent)
@@ -210,10 +199,8 @@ async def handle_message(msg: Message):
         logger.debug("🤖 Sending to Ollama: '%s'", text)
         intent = parse_intent(text)
     action = intent.get("action", "unknown")
-
     t1 = time.time()
     logger.debug("⏱️ parse_intent: %.2fs", t1 - t0)
-
     reply = None
     notification = None
 
@@ -249,10 +236,8 @@ async def handle_message(msg: Message):
             llm_intent = parse_intent(text)
             llm_intent["action"] = "bought"
             items_llm = llm_intent.get("items") or []
-
         pending = get_pending_items()
         responses = []
-
         if items_llm:
             for item in items_llm:
                 name_llm = item["name"]
@@ -277,7 +262,6 @@ async def handle_message(msg: Message):
                     responses.append(add_and_mark_bought(stripped))
                 else:
                     reply = "⚠️ No items found in the message."
-
         if responses:
             result = "\n".join(responses)
             updated_list = show_list()

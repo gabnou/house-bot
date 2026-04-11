@@ -4,6 +4,7 @@ bridge/baileys_auth/
 shopping_list.db
 logs/
 .venv/
+venv/
 __pycache__/
 *.pyc
 node_modules/
