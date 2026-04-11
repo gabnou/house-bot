@@ -76,6 +76,8 @@ house-bot/
 ├── shopping_list.db                    ← SQLite database (auto-generated)
 ├── .venv/                              ← Python virtual environment (generated)
 ├── .env                                ← environment variables (create manually)
+├── .github/
+│   └── copilot-instructions.md         ← GitHub Copilot project context
 ├── requirements.txt
 └── housebot.sh                         ← start/stop script
 ```
