@@ -14,8 +14,8 @@ LOG_LEVEL=${LOG_LEVEL:-info}
 check_model() {
     echo "🔍 Checking Ollama model..."
 
-    # Read the configured model from .env
-    MODEL_CONFIGURED=$(grep '^OLLAMA_MODEL' "$PROJECT_DIR/.env" | head -1 | sed 's/.*=\s*//')
+    # Read the configured model from .env (strip quotes, carriage returns, and surrounding whitespace)
+    MODEL_CONFIGURED=$(grep '^OLLAMA_MODEL' "$PROJECT_DIR/.env" | head -1 | sed 's/.*=\s*//' | tr -d '"'"'" | tr -d '\r' | xargs)
     echo "📦 Configured model: $MODEL_CONFIGURED"
 
     # Read the model currently loaded in memory
