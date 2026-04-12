@@ -16,6 +16,8 @@ Domestic WhatsApp bot for shared management of a shopping list between multiple 
 
 **Multi-language support:** The bot expects English as the default language, but it can communicate in any language — including voice messages. When a text or audio message is not understood, the bot uses the LLM to detect the source language. If a non-English language is identified, the message is automatically translated to English, processed through the normal command pipeline, and the response is translated back into the detected language. This makes the bot accessible to users in any language without additional configuration. Note that language detection and translation require multiple LLM calls, which will noticeably slow down response times on machines with limited RAM where the model cannot stay fully loaded in memory.
 
+**WhatsApp number and Personal BOT:** For multi-partner use, HouseBot requires a dedicated WhatsApp phone number (SIM card) to act as the bot. All partners interact with the bot via this number. For single-user scenarios, you may register your own WhatsApp number and interact with HouseBot through your personal self-chat, enabling all features without a separate SIM.
+
 ---
 
 ## Features
@@ -287,14 +289,14 @@ Send messages directly to the bot's number in a private chat.
 
 **Category keywords** — commands start with `shopping`, `weather` or `calendar` to disambiguate the intent.
 
-**Automatic pre-routing** — without a category keyword, the bot assumes you want to interact with the **shopping list** and directly recognizes the most common patterns without going through the LLM:
+**Automatic pre-routing** — without a category keyword, the bot assumes you want to mainly interact with the **shopping list** and directly recognizes the most common patterns without going through the LLM:
 
 | Message (examples) | Action |
 |---|---|
-| `show`, `list`, `shopping list`, `what's missing?` | show the list |
-| `add yogurt`, `add bread and milk` | add items to the list |
+| `show`, `list`, `shopping list`, `what's missing?` | show the shopping list |
+| `add yogurt`, `add bread and milk` | add items to the shopping list |
 | `bought milk`, `I bought bread` | mark as bought |
-| `remove bread`, `delete eggs` | remove from list |
+| `remove bread`, `delete eggs` | remove from shopping list |
 | `calendar`, `agenda`, `appointments`, `what do I have today?` | show today's events |
 
 **Voice messages** — voice notes (PTT) are automatically transcribed. If the transcription is not understandable, the bot asks you to repeat.
@@ -306,8 +308,10 @@ shopping add milk and eggs
 shopping add ibuprofen
 shopping what's missing?
 shopping what's missing for food?
+shopping bought apples
+shopping remove pasta
 shopping clear
-
+--
 add yogurt                    ← no prefix: shopping pre-routing
 add bread and milk            ← no prefix: shopping pre-routing
 show                          ← no prefix: show list
@@ -322,18 +326,16 @@ remove bread                  ← no prefix: shopping pre-routing
 weather
 weather now
 weather now in Milan
+weather tomorrow
+weather next weekend
 weather next 4 days
 weather next 3 days in Madrid
-weather next 6 hours in Ripoll
+weather next 6 hours in Lecce
 ```
 
 ### Family Calendar
 
 ```text
-calendar                      ← no prefix: show today's events
-agenda                        ← no prefix: show today's events
-what do I have today?         ← no prefix: show today's events
-
 calendar today
 calendar tomorrow
 calendar day after tomorrow
@@ -354,4 +356,9 @@ calendar add doctor visit on April 5th at 10am in Barcelona
 calendar delete dinner with Mario
 calendar move doctor visit to April 6th at 11am
 calendar move Rossella appointment from April 2nd to April 9th
+--
+calendar                      ← no prefix: show today's events
+agenda                        ← no prefix: show today's events
+what do I have today?         ← no prefix: show today's events
+
 ```
