@@ -3,7 +3,6 @@ import os
 import requests
 import json
 import re
-from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 import time
 
@@ -94,276 +93,18 @@ Respond ONLY with JSON, no additional text, no markdown, no explanations.
 
 
 def get_shopping_prompt() -> str:
-    return """You are a shopping list assistant named "house-bot". Interpret the message and respond ONLY with a valid JSON object.
-
-Available actions:
-- add: adds items. {"action": "add", "items": [{"name": "...", "category": "..."}]}
-- remove: removes items from the list. {"action": "remove"}
-- bought: marks items as bought. {"action": "bought", "items": [{"name": "...", "category": "..."}]}
-- show: shows the list. {"action": "show", "category": null|"food"|"other"|"clothing"|"health"}
-- clear: clears the entire list. {"action": "clear"}
-
-Valid categories: food, other, clothing, health.
-Medicine, drugs, vitamins → health. Clothes, shoes, accessories → clothing.
-
-Examples:
-Message: "shopping add milk and eggs"
-Response: {"action": "add", "items": [{"name": "milk", "category": "food"}, {"name": "eggs", "category": "food"}]}
-
-Message: "shopping add aspirin and vitamin C"
-Response: {"action": "add", "items": [{"name": "aspirin", "category": "health"}, {"name": "vitamin C", "category": "health"}]}
-
-Message: "shopping add new shoes"
-Response: {"action": "add", "items": [{"name": "new shoes", "category": "clothing"}]}
-
-Message: "shopping show"
-Response: {"action": "show", "category": null}
-
-Message: "shopping list"
-Response: {"action": "show", "category": null}
-
-Message: "shopping what's on the list?"
-Response: {"action": "show", "category": null}
-
-Message: "shopping what's missing for food?"
-Response: {"action": "show", "category": "food"}
-
-Message: "shopping remove the bread"
-Response: {"action": "remove"}
-
-Message: "shopping I bought milk and bread"
-Response: {"action": "bought", "items": [{"name": "milk", "category": "food"}, {"name": "bread", "category": "food"}]}
-
-Message: "shopping bought milk and bread"
-Response: {"action": "bought", "items": [{"name": "milk", "category": "food"}, {"name": "bread", "category": "food"}]}
-
-Message: "shopping clear"
-Response: {"action": "clear"}
-
-Respond ONLY with JSON, no additional text, no markdown, no explanations."""
+    from skills.shopping import prompt as _p
+    return _p()
 
 
 def get_calendar_prompt() -> str:
-    now = datetime.now()
-    today = now.strftime("%Y-%m-%d")
-    weekday = now.strftime("%A").lower()
-    current_year = now.year
-    next_year = current_year + 1
-
-    # This week: current Monday → current Sunday
-    this_monday = now - timedelta(days=now.weekday())
-    this_sunday = this_monday + timedelta(days=6)
-    this_mon_str = this_monday.strftime("%Y-%m-%d")
-    this_sun_str = this_sunday.strftime("%Y-%m-%d")
-
-    # Next week: next Monday → next Sunday
-    days_to_next_monday = (7 - now.weekday()) % 7 or 7
-    next_monday = now + timedelta(days=days_to_next_monday)
-    next_sunday = next_monday + timedelta(days=6)
-    next_mon_str = next_monday.strftime("%Y-%m-%d")
-    next_sun_str = next_sunday.strftime("%Y-%m-%d")
-    two_weeks_sun_str = (next_monday + timedelta(days=13)).strftime("%Y-%m-%d")
-    three_weeks_sun_str = (next_monday + timedelta(days=20)).strftime("%Y-%m-%d")
-
-    return f"""You are a calendar assistant. Interpret the message and respond ONLY with a valid JSON object.
-
-Today's date: {today} ({weekday}). Current year: {current_year}.
-For dates without a year use {current_year}. If the date has already passed this year, use {next_year}.
-
-Available actions:
-- calendar_show: for relative queries — today, tomorrow, day after tomorrow, next N days. ALWAYS use this for relative queries without fixed dates.
-  {{"action": "calendar_show", "days": N, "offset_days": 0|1|2}}
-- calendar_period: for week, month, fixed date range, or specific date (use start_date = end_date).
-  {{"action": "calendar_period", "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD"}}
-- calendar_add: {{"action": "calendar_add", "title": "...", "date": "YYYY-MM-DD", "start_time": "HH:MM", "end_time": null, "location": null}}
-- calendar_delete: {{"action": "calendar_delete", "title": "..."}}
-- calendar_edit: {{"action": "calendar_edit", "title": "...", "new_title": null, "new_date": null, "new_time": null, "new_location": null}}
-- calendar_details: {{"action": "calendar_details", "title": "..."}}
-
-IMPORTANT: Words like "appointment", "event", "reminder", "meeting" are generic and are NOT part of the title. The title is the specific event name (e.g. "concert of Pixies", "dinner with Mark", "doctor visit").
-
-Examples:
-Message: "calendar"
-Response: {{"action": "calendar_show", "days": 1, "offset_days": 0}}
-
-Message: "calendar events"
-Response: {{"action": "calendar_show", "days": 1, "offset_days": 0}}
-
-Message: "calendar today"
-Response: {{"action": "calendar_show", "days": 1, "offset_days": 0}}
-
-Message: "calendar tomorrow"
-Response: {{"action": "calendar_show", "days": 1, "offset_days": 1}}
-
-Message: "calendar day after tomorrow"
-Response: {{"action": "calendar_show", "days": 1, "offset_days": 2}}
-
-Message: "calendar next 3 days"
-Response: {{"action": "calendar_show", "days": 3, "offset_days": 0}}
-
-Message: "calendar next 10 days"
-Response: {{"action": "calendar_show", "days": 10, "offset_days": 0}}
-
-Message: "calendar this week"
-Response: {{"action": "calendar_period", "start_date": "{this_mon_str}", "end_date": "{this_sun_str}"}}
-
-Message: "calendar show appointments this week"
-Response: {{"action": "calendar_period", "start_date": "{this_mon_str}", "end_date": "{this_sun_str}"}}
-
-Message: "calendar next week"
-Response: {{"action": "calendar_period", "start_date": "{next_mon_str}", "end_date": "{next_sun_str}"}}
-
-Message: "calendar next two weeks"
-Response: {{"action": "calendar_period", "start_date": "{next_mon_str}", "end_date": "{two_weeks_sun_str}"}}
-
-Message: "calendar next three weeks"
-Response: {{"action": "calendar_period", "start_date": "{next_mon_str}", "end_date": "{three_weeks_sun_str}"}}
-
-Message: "calendar april"
-Response: {{"action": "calendar_period", "start_date": "{current_year}-04-01", "end_date": "{current_year}-04-30"}}
-
-Message: "calendar events in april"
-Response: {{"action": "calendar_period", "start_date": "{current_year}-04-01", "end_date": "{current_year}-04-30"}}
-
-Message: "calendar may"
-Response: {{"action": "calendar_period", "start_date": "{current_year}-05-01", "end_date": "{current_year}-05-31"}}
-
-Message: "calendar from the 5th to the 20th of april"
-Response: {{"action": "calendar_period", "start_date": "{current_year}-04-05", "end_date": "{current_year}-04-20"}}
-
-Message: "calendar april 9th"
-Response: {{"action": "calendar_period", "start_date": "{current_year}-04-09", "end_date": "{current_year}-04-09"}}
-
-Message: "calendar what do I have on march 15th"
-Response: {{"action": "calendar_period", "start_date": "{current_year}-03-15", "end_date": "{current_year}-03-15"}}
-
-Message: "calendar add dinner with Mark friday april 3rd at 9pm"
-Response: {{"action": "calendar_add", "title": "dinner with Mark", "date": "{current_year}-04-03", "start_time": "21:00", "end_time": null, "location": null}}
-
-Message: "calendar delete dinner with Mark"
-Response: {{"action": "calendar_delete", "title": "dinner with Mark"}}
-
-Message: "calendar move doctor visit to april 6th at 11am"
-Response: {{"action": "calendar_edit", "title": "doctor visit", "new_title": null, "new_date": "{current_year}-04-06", "new_time": "11:00", "new_location": null}}
-
-Message: "calendar move appointment Rossella from april 2nd to april 9th"
-Response: {{"action": "calendar_edit", "title": "Rossella", "new_title": null, "new_date": "{current_year}-04-09", "new_time": null, "new_location": null}}
-
-Message: "calendar details dinner with Mark"
-Response: {{"action": "calendar_details", "title": "dinner with Mark"}}
-
-Respond ONLY with JSON, no additional text, no markdown, no explanations."""
+    from skills.calendar import prompt as _p
+    return _p()
 
 
 def get_weather_prompt() -> str:
-    now = datetime.now()
-    today_str = now.strftime("%Y-%m-%d")
-    today_weekday = now.strftime("%A").lower()
-
-    # Build next-occurrence table
-    weekday_seen: dict[str, datetime] = {}
-    for i in range(7):
-        d = now + timedelta(days=i)
-        name = d.strftime("%A")
-        if name not in weekday_seen:
-            weekday_seen[name] = d
-
-    ordered_days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-    table_lines = []
-    for day in ordered_days:
-        if day in weekday_seen:
-            d = weekday_seen[day]
-            note = " (today)" if d.date() == now.date() else ""
-            table_lines.append(f'  "{day.lower()}" → "{d.strftime("%Y-%m-%d")}" ({day} {d.day}{note})')
-    table_str = "\n".join(table_lines)
-
-    ex_a = now + timedelta(days=2)
-    ex_a_str = ex_a.strftime("%Y-%m-%d")
-    ex_a_label = ex_a.strftime("%B %d").lstrip("0")
-
-    ex_b = weekday_seen.get("Sunday", now + timedelta(days=6))
-    ex_b_str = ex_b.strftime("%Y-%m-%d")
-    ex_b_day = ex_b.strftime("%A")
-
-    return f"""You are a weather assistant. Interpret the message and respond ONLY with a valid JSON object.
-
-Today's date: {today_str} ({today_weekday}).
-
-Available actions:
-- weather_now: current weather conditions. {{"action": "weather_now", "city": null|"name"}}
-- weather_forecast: forecast for multiple days or for today/tomorrow generically.
-  {{"action": "weather_forecast", "city": null|"name", "days": N, "offset_days": 0|1}}
-  offset_days=0: from today. offset_days=1: from tomorrow.
-- weather_hours: next N hours from now. {{"action": "weather_hours", "city": null|"name", "hours": N}}
-- weather_date: DAILY forecast for a specific day (date or weekday name).
-  {{"action": "weather_date", "city": null|"name", "date": "YYYY-MM-DD"}}
-  ALWAYS use this action when the message specifies a weekday or a precise date and does NOT ask for hourly forecasts.
-- weather_hours_date: HOURLY forecast for a specific day.
-  {{"action": "weather_hours_date", "city": null|"name", "date": "YYYY-MM-DD"}}
-  ALWAYS use this action when hourly weather is requested for a specific day other than "now"/"next hours".
-  Available only for the next 3 days. Use the table below for weekday names.
-
-Upcoming days table (use this to translate weekday → date):
-{table_str}
-
-If city is not specified use null. Default days=3, default hours=12 (max 24).
-
-Examples:
-Message: "weather"
-Response: {{"action": "weather_forecast", "city": null, "days": 3, "offset_days": 0}}
-
-Message: "weather forecast"
-Response: {{"action": "weather_forecast", "city": null, "days": 3, "offset_days": 0}}
-
-Message: "weather today"
-Response: {{"action": "weather_forecast", "city": null, "days": 1, "offset_days": 0}}
-
-Message: "weather tomorrow"
-Response: {{"action": "weather_forecast", "city": null, "days": 1, "offset_days": 1}}
-
-Message: "weather right now"
-Response: {{"action": "weather_now", "city": null}}
-
-Message: "weather now"
-Response: {{"action": "weather_now", "city": null}}
-
-Message: "weather now in Milan"
-Response: {{"action": "weather_now", "city": "Milan"}}
-
-Message: "weather Barcelona"
-Response: {{"action": "weather_forecast", "city": "Barcelona", "days": 3, "offset_days": 0}}
-
-Message: "weather next 4 days"
-Response: {{"action": "weather_forecast", "city": null, "days": 4, "offset_days": 0}}
-
-Message: "weather next 3 days in Madrid"
-Response: {{"action": "weather_forecast", "city": "Madrid", "days": 3, "offset_days": 0}}
-
-Message: "weather next hours"
-Response: {{"action": "weather_hours", "city": null, "hours": 12}}
-
-Message: "weather next 6 hours in Ripoll"
-Response: {{"action": "weather_hours", "city": "Ripoll", "hours": 6}}
-
-Message: "weather hourly forecast tomorrow"
-Response: {{"action": "weather_hours_date", "city": null, "date": "{(now + timedelta(days=1)).strftime('%Y-%m-%d')}"}}
-
-Message: "weather hourly day after tomorrow"
-Response: {{"action": "weather_hours_date", "city": null, "date": "{(now + timedelta(days=2)).strftime('%Y-%m-%d')}"}}
-
-Message: "weather hourly {ex_b_day.lower()}"
-Response: {{"action": "weather_hours_date", "city": null, "date": "{ex_b_str}"}}
-
-Message: "weather {ex_b_day.lower()} in Ripoll"
-Response: {{"action": "weather_date", "city": "Ripoll", "date": "{ex_b_str}"}}
-
-Message: "weather forecast {ex_b_day.lower()}"
-Response: {{"action": "weather_date", "city": null, "date": "{ex_b_str}"}}
-
-Message: "weather {ex_a_label}"
-Response: {{"action": "weather_date", "city": null, "date": "{ex_a_str}"}}
-
-Respond ONLY with JSON, no additional text, no markdown, no explanations."""
+    from skills.weather import prompt as _p
+    return _p()
 
 
 def _parse_raw(raw: str) -> dict:
@@ -469,13 +210,11 @@ def validate_transcription(text: str) -> bool:
 
 
 def parse_intent(text: str) -> dict:
+    from skills.registry import get_prompt
     category = detect_category(text)
-    if category == 'shopping':
-        prompt_text = f"{get_shopping_prompt()}\n\nMessage: \"{text}\"\nResponse:"
-    elif category == 'calendar':
-        prompt_text = f"{get_calendar_prompt()}\n\nMessage: \"{text}\"\nResponse:"
-    elif category == 'weather':
-        prompt_text = f"{get_weather_prompt()}\n\nMessage: \"{text}\"\nResponse:"
+    prompt_fn = get_prompt(category) if category else None
+    if prompt_fn:
+        prompt_text = f"{prompt_fn()}\n\nMessage: \"{text}\"\nResponse:"
     else:
         prompt_text = f"{get_system_prompt()}\n\nMessage: \"{text}\"\nResponse:"
 

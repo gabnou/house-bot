@@ -13,8 +13,8 @@ load_dotenv()
 
 SCOPES = ['https://www.googleapis.com/auth/calendar']
 
-# Paths always relative to project root (two levels above bot/)
-PROJECT_ROOT = Path(__file__).parent.parent
+# Paths relative to project root (three levels above: bot/services/ → bot/ → root)
+PROJECT_ROOT = Path(__file__).parent.parent.parent
 CREDENTIALS_PATH = os.getenv(
     'GOOGLE_CREDENTIALS_PATH',
     str(PROJECT_ROOT / 'creds' / 'client_google_api_calendar.json')

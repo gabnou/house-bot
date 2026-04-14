@@ -1,7 +1,7 @@
 .env
 creds/
 bridge/baileys_auth/
-shopping_list.db
+bot/services/db/shoppinglist.db
 logs/
 .venv/
 venv/

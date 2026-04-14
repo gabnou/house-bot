@@ -88,7 +88,7 @@ start() {
     if [ -f "$LOG_DIR/fastapi.pid" ] && kill -0 $(cat "$LOG_DIR/fastapi.pid") 2>/dev/null; then
         echo "✅ FastAPI was already running"
     else
-        nohup bash -c "cd '$PROJECT_DIR/bot' && '$PROJECT_DIR/venv/bin/python' -m uvicorn main:app --port 8000 --log-level $LOG_LEVEL" \
+        nohup bash -c "cd '$PROJECT_DIR/bot' && '$PROJECT_DIR/.venv/bin/python' -m uvicorn main:app --port 8000 --log-level $LOG_LEVEL" \
             > "$LOG_DIR/fastapi.log" 2>&1 &
         echo $! > "$LOG_DIR/fastapi.pid"
         echo "✅ FastAPI started (PID $(cat $LOG_DIR/fastapi.pid))"
@@ -107,7 +107,7 @@ start() {
     # Scheduler — kill ALL running scheduler instances
     pkill -f "scheduler.py" 2>/dev/null
     sleep 1
-    nohup bash -c "cd '$PROJECT_DIR/bot' && '$PROJECT_DIR/venv/bin/python' scheduler.py" \
+    nohup bash -c "cd '$PROJECT_DIR/bot' && '$PROJECT_DIR/.venv/bin/python' scheduler.py" \
         > "$LOG_DIR/scheduler.log" 2>&1 &
     echo $! > "$LOG_DIR/scheduler.pid"
     echo "✅ Scheduler started (PID $(cat $LOG_DIR/scheduler.pid))"
@@ -141,7 +141,7 @@ watchdog_loop() {
             FASTAPI_PID=$(cat "$LOG_DIR/fastapi.pid")
             if ! kill -0 "$FASTAPI_PID" 2>/dev/null; then
                 echo "$(date '+%Y-%m-%d %H:%M:%S') ⚠️  FastAPI died (PID $FASTAPI_PID) — restarting..." >> "$LOG_DIR/watchdog.log"
-                nohup bash -c "cd '$PROJECT_DIR/bot' && '$PROJECT_DIR/venv/bin/python' -m uvicorn main:app --port 8000 --log-level $LOG_LEVEL" \
+                nohup bash -c "cd '$PROJECT_DIR/bot' && '$PROJECT_DIR/.venv/bin/python' -m uvicorn main:app --port 8000 --log-level $LOG_LEVEL" \
                     >> "$LOG_DIR/fastapi.log" 2>&1 &
                 echo $! > "$LOG_DIR/fastapi.pid"
                 echo "$(date '+%Y-%m-%d %H:%M:%S') ✅ FastAPI restarted (PID $!)" >> "$LOG_DIR/watchdog.log"
@@ -153,7 +153,7 @@ watchdog_loop() {
             SCHED_PID=$(cat "$LOG_DIR/scheduler.pid")
             if ! kill -0 "$SCHED_PID" 2>/dev/null; then
                 echo "$(date '+%Y-%m-%d %H:%M:%S') ⚠️  Scheduler died (PID $SCHED_PID) — restarting..." >> "$LOG_DIR/watchdog.log"
-                nohup bash -c "cd '$PROJECT_DIR/bot' && '$PROJECT_DIR/venv/bin/python' scheduler.py" \
+                nohup bash -c "cd '$PROJECT_DIR/bot' && '$PROJECT_DIR/.venv/bin/python' scheduler.py" \
                     >> "$LOG_DIR/scheduler.log" 2>&1 &
                 echo $! > "$LOG_DIR/scheduler.pid"
                 echo "$(date '+%Y-%m-%d %H:%M:%S') ✅ Scheduler restarted (PID $!)" >> "$LOG_DIR/watchdog.log"
@@ -254,11 +254,20 @@ except:
     else
         echo "Watchdog     ❌ not running"
     fi
+
+    if [ -f "$LOG_DIR/ui.pid" ] && kill -0 $(cat "$LOG_DIR/ui.pid") 2>/dev/null; then
+        echo "UI dev       ✅ running (PID $(cat $LOG_DIR/ui.pid)) — http://localhost:5252"
+    elif [ -d "$PROJECT_DIR/ui/build" ]; then
+        echo "UI dev       ➖ not running (production build present → served by FastAPI)"
+    else
+        echo "UI dev       ❌ not running (no build found — run: ./housebot.sh ui-build)"
+    fi
 }
 
 logs_live() {
     LOGS="$LOG_DIR/bridge.log $LOG_DIR/fastapi.log $LOG_DIR/scheduler.log"
     [ -f "$LOG_DIR/ollama.log" ] && LOGS="$LOGS $LOG_DIR/ollama.log"
+    [ -f "$HOME/.ollama/logs/server.log" ] && LOGS="$LOGS $HOME/.ollama/logs/server.log"
     tail -f $LOGS
 }
 
@@ -275,6 +284,49 @@ qr() {
     tail -f "$LOG_DIR/bridge.log"
 }
 
+ui_build() {
+    echo "🔨 Building UI..."
+    if [ ! -d "$PROJECT_DIR/ui/node_modules" ]; then
+        echo "📦 Installing UI dependencies..."
+        (cd "$PROJECT_DIR/ui" && npm install)
+    fi
+    (cd "$PROJECT_DIR/ui" && npm run build)
+    if [ $? -eq 0 ]; then
+        echo "✅ UI built successfully → ui/build/"
+        echo "   FastAPI will serve it at http://localhost:8000/"
+    else
+        echo "❌ UI build failed"
+        exit 1
+    fi
+}
+
+ui_dev() {
+    echo "🖥️  Starting UI dev server on http://localhost:5252 ..."
+    if [ ! -d "$PROJECT_DIR/ui/node_modules" ]; then
+        echo "📦 Installing UI dependencies..."
+        (cd "$PROJECT_DIR/ui" && npm install)
+    fi
+    if [ -f "$LOG_DIR/ui.pid" ] && kill -0 $(cat "$LOG_DIR/ui.pid") 2>/dev/null; then
+        echo "✅ UI dev server already running (PID $(cat $LOG_DIR/ui.pid))"
+        return
+    fi
+    nohup bash -c "cd '$PROJECT_DIR/ui' && npm run dev" \
+        > "$LOG_DIR/ui.log" 2>&1 &
+    echo $! > "$LOG_DIR/ui.pid"
+    echo "✅ UI dev server started (PID $(cat $LOG_DIR/ui.pid)) — logs: logs/ui.log"
+}
+
+ui_stop() {
+    if [ -f "$LOG_DIR/ui.pid" ] && kill -0 $(cat "$LOG_DIR/ui.pid") 2>/dev/null; then
+        kill $(cat "$LOG_DIR/ui.pid") 2>/dev/null
+        rm -f "$LOG_DIR/ui.pid"
+        echo "✅ UI dev server stopped"
+    else
+        echo "ℹ️  UI dev server was not running"
+        rm -f "$LOG_DIR/ui.pid" 2>/dev/null
+    fi
+}
+
 case "$1" in
     start)          start ;;
     stop)           stop ;;
@@ -286,7 +338,10 @@ case "$1" in
     qr)             qr ;;
     watchdog-start) start_watchdog ;;
     watchdog-stop)  stop_watchdog ;;
+    ui-build)       ui_build ;;
+    ui-dev)         ui_dev ;;
+    ui-stop)        ui_stop ;;
     *)
-        echo "Usage: ./housebot.sh [start|stop|restart|status|logs|logs-live|logs-rotate|qr|watchdog-start|watchdog-stop]"
+        echo "Usage: ./housebot.sh [start|stop|restart|status|logs|logs-live|logs-rotate|qr|watchdog-start|watchdog-stop|ui-build|ui-dev|ui-stop]"
         ;;
 esac

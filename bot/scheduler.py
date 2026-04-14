@@ -2,15 +2,14 @@ import sys
 import logging
 import os
 from pathlib import Path
-sys.path.append(str(Path(__file__).parent))
 
 import fcntl
 import time
 import requests
 from datetime import datetime, date
-from weather import get_morning_briefing
+from services.weather import get_morning_briefing
 from intent_parser import MODEL, OLLAMA_URL, translate_from_english
-from calendar_handler import show_events
+from services.calendar_handler import show_events
 
 from dotenv import load_dotenv
 load_dotenv(dotenv_path=Path(__file__).parent.parent / '.env')

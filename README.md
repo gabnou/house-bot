@@ -23,7 +23,7 @@ Domestic WhatsApp bot for shared management of a shopping list between multiple 
 ## Features
 
 - **Shopping list** — add, remove, view and manage by category (food, other, clothing, health)
-- **Weather** — current conditions and forecasts via OpenWeatherMap (primary) with Open-Meteo fallback
+- **Weather** — current conditions and forecasts via Open-Meteo (free, no key required)
 - **Google Calendar** — read, add, edit and delete events (calendar configurable via `.env`)
 - **Voice messages** — voice notes (PTT) automatically transcribed with faster-whisper (local), validated by the LLM and processed as normal commands
 - **Multi-language support** — the bot is English by default to keep it international, but if a message in a different language is not understood, the bot automatically detects the language, translates the message to English, re-runs the command pipeline, and replies in the detected language
@@ -41,17 +41,66 @@ WhatsApp (Partner 1 / Partner 2)
 WhatsApp Servers (Meta)
         │  WebSocket session
         ▼
-Baileys Bridge (Node.js)      ← bridge/index.js
+Baileys Bridge (Node.js)         ← bridge/index.js           :3001
         │  HTTP
         ▼
-FastAPI Server (Python)       ← bot/main.py
-   ├── Transcribe (Whisper)   ← bot/main.py /transcribe → faster-whisper (local) + LLM validation
-   ├── Intent Parser          ← bot/intent_parser.py  →  Ollama (local LLM)
-   ├── DB Handler             ← bot/db_handler.py     →  SQLite (shopping_list.db)
-   ├── Weather                ← bot/weather.py        →  OpenWeatherMap API / Open-Meteo (fallback)
-   ├── Calendar Handler       ← bot/calendar_handler.py → Google Calendar API
-   └── Scheduler              ← bot/scheduler.py      →  briefing 07:30
+FastAPI Server (Python)          ← bot/main.py               :8000
+   ├── Whisper (transcription)   ← faster-whisper (local)
+   ├── Intent Parser             ← bot/intent_parser.py → Ollama (local LLM)
+   ├── Orchestrator              ← bot/orchestrator.py  → Skills registry
+   │       └── Skills            ← bot/skills/  (shopping, weather, calendar)
+   │               └── Services  ← bot/services/ (DB, weather API, Google Calendar)
+   ├── Admin API                 ← bot/admin/router.py (services, models, prompts, logs)
+   └── Scheduler                 ← bot/scheduler.py     → morning briefing
+
+Control Panel (SvelteKit + Skeleton UI)                       :5252
+        └── /admin/api/* ──► FastAPI Admin Router
 ```
+
+The **Control Panel** is a browser-based UI for configuration, monitoring, and management. It communicates exclusively with the FastAPI Admin Router via `/admin/api/*` endpoints. After the bot is started, all day-to-day operations (service control, model switching, prompt editing, status monitoring) are available there.
+
+### Request flow
+
+Every inbound message follows this exact sequence — **one LLM call, one action, one reply**. There is no reasoning loop by design: HouseBot handles simple, direct requests and the single-shot approach keeps latency low and output predictable.
+
+```text
+Incoming message
+      │
+      ▼
+ language detection + translation (LLM, only if non-English)
+      │
+      ▼
+ pre_route()  ──── fast regex match (no LLM) ───► action dict
+      │ (miss)
+      ▼
+ parse_intent()  ── LLM call → JSON {"action": "...", ...} ──► action dict
+      │
+      ▼
+ orchestrator.py
+      │  action_to_tool("weather_forecast") → "weather.forecast"
+      ▼
+ bot/skills/registry  →  get("weather.forecast")  →  forecast_tool(payload)
+      │
+      ▼
+ services/weather.py  →  get_weather_forecast(...)  →  string reply
+      │
+      ▼
+ translate reply back (LLM, only if non-English)
+      │
+      ▼
+  {"reply": "...", "notification": "..."}
+```
+
+### Why the skills layer matters
+
+The `bot/skills/` package is the extension point of the bot. Each domain (shopping, weather, calendar) registers its tools in a central registry with:
+- **Pydantic input schema** — parameters are validated before any business logic runs
+- **Own LLM prompt** — the `register_prompt()` call lets each skill own its few-shot examples, keeping domains isolated
+- **Callable** — a plain Python function that maps the validated payload to a `services/` call and returns a dict
+
+Adding a new capability (e.g. home automation, reminders) means creating a new `bot/skills/X.py` file with one or more `register()` calls — no changes to `main.py`, `orchestrator.py`, or any other skill.
+
+This is intentionally **not** an agentic loop. HouseBot does not let the LLM chain multiple tool calls or reason across steps. One message → one intent → one tool → one reply. This trade-off is deliberate: for a household WhatsApp bot with simple, direct requests, a reasoning loop would add latency, hallucination risk, and complexity without meaningful benefit.
 
 ---
 
@@ -59,40 +108,41 @@ FastAPI Server (Python)       ← bot/main.py
 
 ```shell
 house-bot/
-├── bridge/
+├── bridge/                             ← Baileys WhatsApp bridge (Node.js)
+│   ├── index.js
 │   ├── package.json
-│   ├── index.js                        ← Baileys WhatsApp bridge
 │   └── baileys_auth/                   ← WhatsApp session (auto-generated)
-├── bot/
-│   ├── main.py                         ← FastAPI server
+├── bot/                                ← FastAPI server + all Python logic
+│   ├── main.py                         ← entry point, mounts admin router + static UI
 │   ├── intent_parser.py                ← LLM parsing → JSON action
-│   ├── db_handler.py                   ← SQLite CRUD
-│   ├── weather.py                      ← OpenWeatherMap + Open-Meteo integration
-│   ├── calendar_handler.py             ← Google Calendar integration
+│   ├── orchestrator.py                 ← routes action → skill
 │   ├── scheduler.py                    ← morning briefing
-│   └── schema.sql                      ← database schema
-├── creds/
-│   ├── client_google_api_calendar.json ← Google OAuth credentials (download manually)
-│   └── token.json                      ← OAuth token (auto-generated)
+│   ├── admin/                          ← Admin API (service control, models, prompts, logs)
+│   ├── skills/                         ← tool registry + per-domain skills + LLM prompts
+│   │   └── registry.py                 ← checks bot/prompts/{skill}.txt for hot-reload overrides
+│   └── services/                       ← business logic (Shopping DB, weather, Google Calendar)
+│       └── db/                         ← SQLite schema + database (auto-generated)
+├── ui/                                 ← SvelteKit control panel (Skeleton UI, Tailwind v4)
+│   ├── src/routes/                     ← pages: home, status, admin, prompts, config, install
+│   ├── static/                         ← logo + favicon
+│   ├── build/                          ← production build served by FastAPI (generated)
+│   └── package.json
+├── creds/                              ← Google OAuth credentials + token (auto-generated)
 ├── logs/                               ← process logs (generated by housebot.sh)
-├── shopping_list.db                    ← SQLite database (auto-generated)
-├── .venv/                              ← Python virtual environment (generated)
-├── .env                                ← environment variables (create manually)
-├── .github/
-│   └── copilot-instructions.md         ← GitHub Copilot project context
+├── .env                                ← environment variables (created at first run)
 ├── requirements.txt
-└── housebot.sh                         ← start/stop script
+└── housebot.sh                         ← CLI lifecycle management
 ```
 
 ---
 
 ## Prerequisites
 
-- [Homebrew](https://brew.sh) installed
+- [Homebrew](https://brew.sh)
 - Python 3.11+
 - Node.js 18+
 - Ollama
-- A dedicated WhatsApp number (separate SIM)
+- A dedicated WhatsApp number (separate SIM, or your own number for single-user)
 - A Google account
 
 ---
@@ -115,137 +165,65 @@ brew install ollama
 
 ### 3 — Download the LLM model
 
-Start Ollama and download the model (~13 GB):
-
 ```bash
 ollama serve &
 ollama pull mistral-small:22b
 ```
 
-If you want to use a lighter model (less RAM required):
+For a lighter model (requires less RAM):
 
 ```bash
 ollama pull llama3.1:8b
 ```
 
-Then update `OLLAMA_MODEL` in your `.env` file with the chosen model name.
-
-### 4 — Install Node.js dependencies
+### 4 — Install dependencies
 
 ```bash
+# WhatsApp bridge
 cd bridge && npm install && cd ..
-```
 
-### 5 — Create the Python virtual environment
+# Control panel UI (install + production build)
+./housebot.sh ui-build
 
-```bash
+# Python environment
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 6 — Configure Google Calendar credentials
+> The production UI build is placed in `ui/build/` and served statically by FastAPI at `http://localhost:8000/`. You only need to rebuild when UI source files change (`./housebot.sh ui-build`).
 
-1. On [console.cloud.google.com](https://console.cloud.google.com): create a project, enable the **Google Calendar API**, create **OAuth 2.0 → Desktop app** credentials and save the downloaded JSON to `creds/client_google_api_calendar.json`
-2. In the **OAuth consent screen → Test users** section, add your Google email
-3. First authentication (opens the browser for consent):
+### 5 — Start and configure via the UI
 
 ```bash
-source .venv/bin/activate
-cd bot && python -c "from calendar_handler import get_service; get_service()" && cd ..
+ollama serve &
+./housebot.sh start
 ```
 
-The token is saved in `creds/token.json` and does not need renewal unless revoked.
-
-### 7 — Configure environment variables
-
-Copy the example file and edit it:
-
-```bash
-cp .env.example .env
-```
-
-> **Security:** `.env` contains sensitive credentials (API keys, partner phone JIDs). It is already listed in `.gitignore` and must **never** be committed or shared. Keep it private.
-
-Edit `.env` with your actual values:
-
-```env
-OLLAMA_URL=http://localhost:11434       # Ollama API URL
-OLLAMA_MODEL=mistral-small:22b          # Ollama model name
-
-GOOGLE_CALENDAR_NAME=Family             # exact name of the Google calendar
-CALENDAR_TIMEZONE=Europe/Madrid         # timezone for calendar events
-
-OPENWEATHER_API_KEY=<your-key>          # OpenWeatherMap API key (free at openweathermap.org)
-
-LOG_LEVEL=INFO                          # log level: DEBUG, INFO, WARNING, ERROR
-
-# WhatsApp partner numbers (comma-separated; add as many as needed)
-# The documentation uses 2 partners as an example, but you can configure fewer or more
-# simply by adding or removing entries in the comma-separated lists below
-PARTNER_LID=XXXXXXXXXXXXXXX@lid,XXXXXXXXXXXXXXX@lid
-PARTNER_NET=XXXXXXXXXXX@s.whatsapp.net,XXXXXXXXXXX@s.whatsapp.net
-```
-
-### 8 — Find the WhatsApp partner JIDs
-
-The bridge and the bot use the `@lid` JID format to identify each partner. This value is assigned by WhatsApp and cannot be derived from the phone number — it must be discovered at runtime.
-
-**Step-by-step:**
-
-1. **Leave `PARTNER_LID` empty** in your `.env` file (or set it to a blank value). This temporarily disables the sender filter while the bridge is still fully functional:
-
-   ```env
-   PARTNER_LID=
-   ```
-
-2. **Start the bridge** (see [First WhatsApp Authentication](#first-whatsapp-authentication) if you haven't linked the number yet):
-
-   ```bash
-   cd bridge && node index.js
-   ```
-
-3. **Have each partner send any message** from their phone to the bot's number.
-
-4. **Check the bridge log** — every message from an unknown sender is logged like this:
-
-   ```
-   🚫 Message ignored from: 93119253061741@lid
-   ```
-
-   Each `@lid` value is the JID you need.
-
-5. **Update your `.env`** with the discovered values and restart:
-
-   ```env
-   PARTNER_LID=<jid1>@lid,<jid2>@lid
-   ```
-
-   Once set, the filter is active and only messages from the listed JIDs will be processed.
-
-> **Note:** Two partners are used throughout this documentation as an example, but the bot supports any number. Simply add or remove comma-separated entries in `PARTNER_LID` in your `.env` file — no code changes are required.
-
----
-
-## First WhatsApp Authentication
-
-The first time you need to scan a QR code to link the dedicated number:
-
-```bash
-cd bridge
-node index.js
-```
-
-Scan the QR code with the dedicated number's phone:
-**WhatsApp → Settings → Linked devices → Link a device**
-
-Wait for the message `HouseBot connected and ready!`, then press `CTRL+C`.
-
-The session is saved in `bridge/baileys_auth/` — subsequent restarts do not require the QR.
+Then open **http://localhost:5252** and use the **Installation** wizard to:
+- Configure `.env` (Ollama model, location, partners, calendar, timezone …)
+- Set up Google Calendar OAuth
+- Pair WhatsApp via QR code
+- Discover partner JIDs
+- Run a smoke test
 
 ---
 
 ## Usage
+
+`housebot.sh` manages all processes from the CLI. Once the bot is running, the **Control Panel** is available at **http://localhost:8000** — served directly by FastAPI alongside the bot API.
+
+### Tech stack
+
+| Layer | Technology | Port |
+|---|---|---|
+| WhatsApp bridge | Node.js + Baileys | 3001 (internal) |
+| Bot API | Python + FastAPI (uvicorn) | 8000 |
+| Local LLM | Ollama | 11434 (default) |
+| Speech-to-text | faster-whisper | (in-process) |
+| Control Panel | SvelteKit + Skeleton UI + Tailwind v4 | served at :8000/ |
+
+The Control Panel production build (`ui/build/`) is served statically by FastAPI. No separate server is needed in production — everything is on port **8000** and proxied through the bot.
 
 ### Make the script executable (first time only)
 
@@ -256,15 +234,19 @@ chmod +x housebot.sh
 ### Available commands
 
 ```bash
-./housebot.sh start      # start FastAPI, Bridge and Scheduler (requires Ollama already running)
-./housebot.sh stop       # stop everything
-./housebot.sh restart    # restart everything
-./housebot.sh status     # show process status
-./housebot.sh logs       # show recent logs for all processes
-./housebot.sh logs-live  # follow all process logs in real time
-./housebot.sh logs-rotate # manually rotate logs (also runs automatically on start)
-./housebot.sh qr         # follow bridge log in real time (for QR)
+./housebot.sh start        # start FastAPI, Bridge and Scheduler (requires Ollama already running)
+./housebot.sh stop         # stop everything
+./housebot.sh restart      # restart everything
+./housebot.sh status       # show process status
+./housebot.sh logs         # show recent logs for all processes
+./housebot.sh logs-live    # follow all process logs in real time
+./housebot.sh logs-rotate  # manually rotate logs (also runs automatically on start)
+./housebot.sh qr           # follow bridge log in real time (for QR code on first run)
+./housebot.sh ui-build     # rebuild the control panel UI (run after pulling UI changes)
+./housebot.sh ui-dev       # start Vite dev server on :5252 (UI development only)
 ```
+
+> **UI development:** `./housebot.sh ui-dev` starts the Vite dev server at **http://localhost:5252** with HMR — for UI development only. It proxies `/admin/api/*` to the FastAPI server at `:8000`, so the bot must be running alongside. In production, always use **http://localhost:8000**.
 
 ### Typical startup
 
@@ -272,13 +254,12 @@ chmod +x housebot.sh
 # Start Ollama (must be running before housebot.sh start)
 ollama serve &
 
-# First WhatsApp authentication (first time only)
-cd bridge && node index.js   # scan QR, wait for connection, CTRL+C
-cd ..
-
 # Normal startup
 ./housebot.sh start
 ./housebot.sh status
+
+# Open the control panel
+open http://localhost:8000
 ```
 
 ---
@@ -286,6 +267,10 @@ cd ..
 ## WhatsApp Commands
 
 Send messages directly to the bot's number in a private chat.
+
+**Language** — the bot is built in English but understands and replies in any language. When a message is not recognised as English, it is automatically translated to English, processed, and the reply is translated back to the detected language. This works for both text and voice messages.
+
+**Custom prompts** — the command examples below reflect the default built-in behaviour. You can extend or tune intent recognition per skill (shopping, weather, calendar) directly in the Control Panel at **http://localhost:8000** → Prompting, without restarting the bot.
 
 **Category keywords** — commands start with `shopping`, `weather` or `calendar` to disambiguate the intent.
 
@@ -299,7 +284,7 @@ Send messages directly to the bot's number in a private chat.
 | `remove bread`, `delete eggs` | remove from shopping list |
 | `calendar`, `agenda`, `appointments`, `what do I have today?` | show today's events |
 
-**Voice messages** — voice notes (PTT) are automatically transcribed. If the transcription is not understandable, the bot asks you to repeat.
+**Voice messages** — voice notes (PTT) are automatically transcribed in any language. If the transcription is not understandable, the bot asks you to repeat.
 
 ### Shopping List
 

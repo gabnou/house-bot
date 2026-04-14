@@ -5,8 +5,6 @@ import logging
 import tempfile
 import re as _re
 from pathlib import Path
-from difflib import SequenceMatcher
-sys.path.append(str(Path(__file__).parent))  # Add bot/ to sys.path
 
 # Load environment variables
 from dotenv import load_dotenv
@@ -21,28 +19,19 @@ logging.basicConfig(
     force=True,
 )
 # Explicitly set the level on all app loggers so uvicorn cannot override it
-for _name in ("__main__", "main", "intent_parser", "db_handler", "weather", "calendar_handler", "scheduler"):
+for _name in ("__main__", "main", "intent_parser", "shopping_db", "weather", "calendar_handler", "scheduler"):
     logging.getLogger(_name).setLevel(_log_level)
 logger = logging.getLogger(__name__)
 
 # Third-party and local imports
 from fastapi import FastAPI, UploadFile, File
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 from faster_whisper import WhisperModel
-from db_handler import (
-    init_db, add_item, remove_item,
-    mark_bought, add_and_mark_bought,
-    show_list, clear_list,
-    recent_bought, get_pending_items
-)
+from services.shopping_db import init_db
 from intent_parser import parse_intent, detect_category, validate_transcription, detect_language, translate_to_english, translate_from_english, classify_intent_category
-from weather import get_weather_now, get_weather_forecast, get_weather_hours, get_weather_hours_day
-from calendar_handler import (
-    show_events, add_event,
-    delete_event, edit_event,
-    event_details, show_events_period
-)
+from admin.router import router as admin_router
 
 # List of partner JIDs from env
 PARTNER = [
@@ -50,33 +39,6 @@ PARTNER = [
     for jid in os.getenv("PARTNER_LID", "").split(",")
     if jid.strip()
 ]
-
-# Actions that modify the list
-MODIFYING_ACTIONS = {"add", "remove", "bought", "clear"}
-
-# Fuzzy match threshold
-FUZZY_THRESHOLD = 0.82
-
-# Find pending items in text using substring or fuzzy match
-def match_items_in_text(text: str, pending_items: list) -> list:
-    text_lower = text.lower()
-    words = text_lower.split()
-    matched = []
-    for item in pending_items:
-        item_lower = item.lower()
-        # Exact match
-        if item_lower in text_lower:
-            matched.append(item)
-            continue
-        # Fuzzy match
-        item_words = item_lower.split()
-        n = len(item_words)
-        for i in range(len(words) - n + 1):
-            window = " ".join(words[i:i + n])
-            if SequenceMatcher(None, item_lower, window).ratio() >= FUZZY_THRESHOLD:
-                matched.append(item)
-                break
-    return matched
 
 # Regex patterns for intent detection
 _PATTERN_SHOW_LIST = _re.compile(
@@ -133,6 +95,15 @@ async def lifespan(app: FastAPI):
 
 # FastAPI app instance
 app = FastAPI(lifespan=lifespan)
+
+# Admin API router
+app.include_router(admin_router)
+
+# Serve the SvelteKit production build (ui/build/) if it exists
+_UI_BUILD = Path(__file__).parent.parent / "ui" / "build"
+if _UI_BUILD.exists():
+    app.mount("/", StaticFiles(directory=str(_UI_BUILD), html=True), name="ui")
+    logger.info("🖥️  Admin UI served from %s", _UI_BUILD)
 
 # Request models
 class Message(BaseModel):
@@ -194,274 +165,89 @@ async def handle_message(msg: Message):
     if not text:
         return {"reply": None, "notification": None}
     logger.debug("🔍 Received text: '%s'", text)
-    # Try fast intent detection, else use LLM
+    # Try fast intent detection first — no language overhead for keyword messages
     intent = pre_route(text)
+    effective_text = text
+    detected_lang = None
+
     if intent:
         logger.debug("⚡ pre_route match: %s", intent)
     else:
-        logger.debug("🤖 Sending to Ollama: '%s'", text)
-        intent = parse_intent(text)
+        # Detect language before sending to LLM
+        lang_info = detect_language(text)
+        lang = lang_info.get("language", "").strip() if lang_info else ""
+        confidence = lang_info.get("confidence", "low").strip().lower() if lang_info else "low"
+
+        if lang and lang.lower() != "english" and confidence in ("high", "medium"):
+            logger.info("🌐 Detected language: %s (%s confidence) — translating...", lang, confidence)
+            translated = translate_to_english(text, lang)
+            if translated:
+                logger.info("🌐 Translated to English: %s", translated)
+                detected_lang = lang
+                effective_text = translated
+
+        # Classify category if not directly detectable (handles non-keyword messages)
+        if detect_category(effective_text) is None:
+            classified = classify_intent_category(effective_text)
+            if classified:
+                logger.info("🏷️ Classified as '%s' — prepending keyword", classified)
+                effective_text = f"{classified} {effective_text}"
+
+        logger.debug("🤖 Sending to Ollama: '%s'", effective_text)
+        intent = parse_intent(effective_text)
+
     action = intent.get("action", "unknown")
     t1 = time.time()
     logger.debug("⏱️ parse_intent: %.2fs", t1 - t0)
     reply = None
     notification = None
 
-    match action:
-        case "add":
-            items = intent.get("items")
-            if not items:
-                llm_intent = parse_intent("shopping " + text)
-                items = llm_intent.get("items") or []
-            responses = []
-            for item in items:
-                responses.append(add_item(item["name"], item.get("category", "other")))
-            result = "\n".join(responses)
-            updated_list = show_list()
-            recent = recent_bought()
-            reply = f"{result}\n\n{updated_list}\n\n{recent}" if recent else f"{result}\n\n{updated_list}"
+    from orchestrator import handle_intent as _orchestrator
+    try:
+        orchestrator_result = await _orchestrator(intent, effective_text, msg.sender)
+    except Exception as e:
+        logger.exception("Orchestrator error: %s", e)
+        orchestrator_result = None
 
-        case "remove":
-            pending = get_pending_items()
-            matched = match_items_in_text(text, pending)
-            if not matched:
-                reply = "⚠️ No items from the list found in the message."
-            else:
-                responses = [remove_item(name) for name in matched]
-                result = "\n".join(responses)
-                updated_list = show_list()
-                recent = recent_bought()
-                reply = f"{result}\n\n{updated_list}\n\n{recent}" if recent else f"{result}\n\n{updated_list}"
-
-        case "bought":
-            # If pre_route fired there are no items — call LLM just for name extraction
-            items_llm = intent.get("items")
-            if items_llm is None:
-                llm_intent = parse_intent(text)
-                llm_intent["action"] = "bought"
-                items_llm = llm_intent.get("items") or []
-            pending = get_pending_items()
-            responses = []
-            if items_llm:
-                for item in items_llm:
-                    name_llm = item["name"]
-                    category = item.get("category", "other")
-                    matched = match_items_in_text(name_llm, pending)
-                    if matched:
-                        responses.append(mark_bought(matched[0]))
-                    else:
-                        responses.append(add_and_mark_bought(name_llm, category))
-            else:
-                # Fallback 1: fuzzy match whole message text against pending
-                matched = match_items_in_text(text, pending)
-                if matched:
-                    responses = [mark_bought(name) for name in matched]
-                else:
-                    # Fallback 2: strip trigger words and treat remainder as item name
-                    stripped = _re.sub(
-                        r'^\s*(i\s+)?(bought|got|picked\s+up|purchased)\s*',
-                        '', text, flags=_re.IGNORECASE
-                    ).strip()
-                    if stripped:
-                        responses.append(add_and_mark_bought(stripped))
-                    else:
-                        reply = "⚠️ No items found in the message."
-            if responses:
-                result = "\n".join(responses)
-                updated_list = show_list()
-                recent = recent_bought()
-                reply = f"{result}\n\n{updated_list}\n\n{recent}" if recent else f"{result}\n\n{updated_list}"
-
-        case "show":
-            updated_list = show_list(intent.get("category"))
-            recent = recent_bought()
-            reply = f"{updated_list}\n\n{recent}" if recent else updated_list
-
-        case "clear":
-            reply = clear_list()
-
-        case "weather_date":
-            from datetime import datetime as _dt
-            date_str = intent.get("date", "")
-            try:
-                target = _dt.strptime(date_str, "%Y-%m-%d").date()
-                today = _dt.now().date()
-                offset = (target - today).days
-                if offset < 0:
-                    reply = "⚠️ The requested date has already passed."
-                elif offset > 6:
-                    reply = "⚠️ I can only show forecasts for the next 7 days."
-                else:
-                    reply = get_weather_forecast(city=intent.get("city"), days=1, offset_days=offset)
-            except Exception:
-                reply = "⚠️ Invalid date in the message."
-
-        case "weather_hours_date":
-            reply = get_weather_hours_day(
-                target_date=intent.get("date", ""),
-                city=intent.get("city")
-            )
-
-        case "weather_now":
-            reply = get_weather_now(intent.get("city"))
-
-        case "weather_hours":
-            reply = get_weather_hours(
-                hours=intent.get("hours", 12),
-                city=intent.get("city")
-            )
-
-        case "weather_forecast":
-            reply = get_weather_forecast(
-                city=intent.get("city"),
-                days=intent.get("days", 3),
-                offset_days=intent.get("offset_days", 0)
-            )
-
-        case "calendar_show":
-            reply = show_events(
-                days=intent.get("days", 1),
-                offset_days=intent.get("offset_days", 0)
-            )
-
-        case "calendar_period":
-            reply = show_events_period(
-                start_date=intent.get("start_date"),
-                end_date=intent.get("end_date")
-            )
-
-        case "calendar_add":
-            reply = add_event(
-                title=intent.get("title", "New event"),
-                date=intent.get("date"),
-                start_time=intent.get("start_time"),
-                end_time=intent.get("end_time"),
-                location=intent.get("location")
-            )
-
-        case "calendar_delete":
-            reply = delete_event(
-                title=intent.get("title"),
-                date=intent.get("date")
-            )
-
-        case "calendar_edit":
-            reply = edit_event(
-                title=intent.get("title"),
-                new_title=intent.get("new_title"),
-                new_date=intent.get("new_date"),
-                new_time=intent.get("new_time"),
-                new_location=intent.get("new_location")
-            )
-
-        case "calendar_details":
-            reply = event_details(intent.get("title"))
-
-        case "help":
-            reply = (
-                "🤖 *House-Bot — What I can do*\n\n"
-                "🛒 *Shopping list*\n"
-                "  shopping add milk and eggs\n"
-                "  shopping add aspirin\n"
-                "  shopping I bought milk\n"
-                "  shopping remove bread\n"
-                "  shopping what's missing?\n"
-                "  shopping clear the list\n\n"
-                "🌤️ *Weather*\n"
-                "  weather <city> (default: Barcelona)\n"
-                "  weather now\n"
-                "  weather now in Milan\n"
-                "  weather next 4 days\n"
-                "  weather next hours\n"
-                "  weather next 6 hours in Ripoll\n"
-                "  weather forecast\n"
-                "  weather forecast London\n\n"
-                "📅 *Calendar*\n"
-                "  calendar what do I have today?\n"
-                "  calendar this week\n"
-                "  calendar events in april\n"
-                "  calendar from the 5th to the 20th of april\n"
-                "  calendar details dinner with Gael\n"
-                "  calendar add dinner with Gael friday 28th at 9pm\n"
-                "  calendar delete dinner with Gael\n"
-                "  calendar move doctor visit to april 6th at 11am\n\n"
-            )
-
-        case "unknown":
-            # --- Language fallback: detect if the message is in a non-English language ---
-            lang_info = detect_language(text)
-            detected_lang = lang_info.get("language", "").strip() if lang_info else ""
-            confidence = lang_info.get("confidence", "low").strip().lower() if lang_info else "low"
-            is_foreign = (
-                detected_lang
-                and detected_lang.lower() != "english"
-                and confidence in ("high", "medium")
-            )
-
-            if is_foreign:
-                logger.info("🌐 Detected language: %s (%s confidence) — attempting translation", detected_lang, confidence)
-                translated = translate_to_english(text, detected_lang)
-                if translated:
-                    logger.info("🌐 Translated to English: %s", translated)
-                    # Track the text that will be used for re-processing
-                    effective_text = translated
-                    # Re-run intent through pre_route + LLM with the English translation
-                    re_intent = pre_route(translated)
-                    if not re_intent:
-                        re_intent = parse_intent(translated)
-                    re_action = re_intent.get("action", "unknown")
-
-                    # If still unknown, try to classify the intent by affinity and prepend the keyword
-                    if re_action in ("unknown", "error") and detect_category(translated) is None:
-                        classified = classify_intent_category(translated)
-                        if classified:
-                            logger.info("🏷️ Classified translated text as '%s' — retrying with keyword", classified)
-                            prefixed = f"{classified} {translated}"
-                            re_intent = pre_route(prefixed)
-                            if not re_intent:
-                                re_intent = parse_intent(prefixed)
-                            re_action = re_intent.get("action", "unknown")
-                            if re_action not in ("unknown", "error"):
-                                effective_text = prefixed
-
-                    if re_action != "unknown" and re_action != "error":
-                        # Successful re-parse — recurse with the text that actually worked
-                        translated_msg = Message(sender=msg.sender, text=effective_text)
-                        result = await handle_message(translated_msg)
-                        en_reply = result.get("reply", "")
-                        notification = result.get("notification")
-                        # Translate the reply back to the detected language
-                        if en_reply:
-                            translated_reply = translate_from_english(en_reply, detected_lang)
-                            reply = translated_reply if translated_reply else en_reply
-                        else:
-                            reply = en_reply
-                        return {"reply": reply, "notification": notification}
-                    else:
-                        # Still unknown after translation
-                        reply = (
-                            f"🌐 I detected your message might be in *{detected_lang}* and tried to translate it, "
-                            f"but I still couldn't understand the request.\n\n"
-                            "💡 *Tip:* start your message with a keyword (English examples):\n"
-                            "• *shopping* show list\n"
-                            "• *weather* forecast tomorrow\n"
-                            "• *calendar* events this week\n"
-                        )
-                else:
-                    # Translation failed
-                    reply = (
-                        f"🌐 I detected your message might be in *{detected_lang}*, "
-                        "but I was unable to translate it. Please try again in English.\n\n"
-                        "💡 *Tip:* start your message with a keyword (English examples):\n"
-                        "• *shopping* show list\n"
-                        "• *weather* forecast tomorrow\n"
-                        "• *calendar* events this week\n"
-                    )
-            else:
-                # Original unknown handler (English or low-confidence detection)
+    if orchestrator_result:
+        reply = orchestrator_result.get("reply")
+        notification = orchestrator_result.get("notification")
+    else:
+        # Fallback for actions not handled by any skill (help, unknown, error)
+        match action:
+            case "help":
+                reply = (
+                    "🤖 *House-Bot — What I can do*\n\n"
+                    "🛒 *Shopping list*\n"
+                    "  shopping add milk and eggs\n"
+                    "  shopping add aspirin\n"
+                    "  shopping I bought milk\n"
+                    "  shopping remove bread\n"
+                    "  shopping what's missing?\n"
+                    "  shopping clear the list\n\n"
+                    "🌤️ *Weather*\n"
+                    "  weather <city> (default: Barcelona)\n"
+                    "  weather now\n"
+                    "  weather now in Milan\n"
+                    "  weather next 4 days\n"
+                    "  weather next hours\n"
+                    "  weather next 6 hours in Ripoll\n"
+                    "  weather forecast\n"
+                    "  weather forecast London\n\n"
+                    "📅 *Calendar*\n"
+                    "  calendar what do I have today?\n"
+                    "  calendar this week\n"
+                    "  calendar events in april\n"
+                    "  calendar from the 5th to the 20th of april\n"
+                    "  calendar details dinner with Gael\n"
+                    "  calendar add dinner with Gael friday 28th at 9pm\n"
+                    "  calendar delete dinner with Gael\n"
+                    "  calendar move doctor visit to april 6th at 11am\n\n"
+                )
+            case _:
                 llm_reply = intent.get("reply", "I couldn't understand, please try again!")
                 suggestion = ""
-                if detect_category(text) is None:
+                if detect_category(effective_text) is None:
                     suggestion = (
                         "💡 *Tip:* start your message with a keyword:\n"
                         "• *shopping* show list\n"
@@ -475,21 +261,14 @@ async def handle_message(msg: Message):
                     f"{llm_reply}"
                 )
 
-        case _:
-            reply = (
-                "⚠️ I couldn't understand the request.\n\n"
-                "💡 *Tip:* start your message with a keyword:\n"
-                "• *shopping* show list\n"
-                "• *weather* forecast tomorrow\n"
-                "• *calendar* events this week\n"
-            )
-
     t2 = time.time()
     logger.debug("⏱️ action '%s': %.2fs", action, t2 - t1)
     logger.debug("⏱️ total: %.2fs", t2 - t0)
 
-    if action in MODIFYING_ACTIONS:
-        updated_list = show_list()
-        notification = f"📋 List updated by a partner:\n\n{updated_list}"
+    # Translate reply back if the original message was in a foreign language
+    if detected_lang and reply:
+        translated_reply = translate_from_english(reply, detected_lang)
+        if translated_reply:
+            reply = translated_reply
 
     return {"reply": reply, "notification": notification}

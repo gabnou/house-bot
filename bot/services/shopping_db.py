@@ -4,8 +4,8 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = Path(__file__).parent.parent / "shopping_list.db"
-SCHEMA_PATH = Path(__file__).parent / "schema.sql"
+DB_PATH = Path(__file__).parent / "db" / "shoppinglist.db"
+SCHEMA_PATH = Path(__file__).parent / "db" / "shoppinglist_schema.sql"
 
 VALID_CATEGORIES = {'food', 'other', 'clothing', 'health'}
 
