@@ -211,7 +211,7 @@ Then open **http://localhost:5252** and use the **Installation** wizard to:
 
 ## Usage
 
-`housebot.sh` manages all processes from the CLI. Once the bot is running, day-to-day management (service control, model switching, log viewing, prompt editing) is available in the **Control Panel** at **http://localhost:5252**.
+`housebot.sh` manages all processes from the CLI. Once the bot is running, the **Control Panel** is available at **http://localhost:8000** — served directly by FastAPI alongside the bot API.
 
 ### Tech stack
 
@@ -246,7 +246,7 @@ chmod +x housebot.sh
 ./housebot.sh ui-dev       # start Vite dev server on :5252 (UI development only)
 ```
 
-> **UI development:** `./housebot.sh ui-dev` starts the Vite dev server at **http://localhost:5252** with HMR. It proxies `/admin/api/*` to the FastAPI server at `:8000`, so the bot must be running alongside.
+> **UI development:** `./housebot.sh ui-dev` starts the Vite dev server at **http://localhost:5252** with HMR — for UI development only. It proxies `/admin/api/*` to the FastAPI server at `:8000`, so the bot must be running alongside. In production, always use **http://localhost:8000**.
 
 ### Typical startup
 
@@ -259,7 +259,7 @@ ollama serve &
 ./housebot.sh status
 
 # Open the control panel
-open http://localhost:5252
+open http://localhost:8000
 ```
 
 ---
@@ -267,6 +267,10 @@ open http://localhost:5252
 ## WhatsApp Commands
 
 Send messages directly to the bot's number in a private chat.
+
+**Language** — the bot is built in English but understands and replies in any language. When a message is not recognised as English, it is automatically translated to English, processed, and the reply is translated back to the detected language. This works for both text and voice messages.
+
+**Custom prompts** — the command examples below reflect the default built-in behaviour. You can extend or tune intent recognition per skill (shopping, weather, calendar) directly in the Control Panel at **http://localhost:8000** → Prompting, without restarting the bot.
 
 **Category keywords** — commands start with `shopping`, `weather` or `calendar` to disambiguate the intent.
 
@@ -280,7 +284,7 @@ Send messages directly to the bot's number in a private chat.
 | `remove bread`, `delete eggs` | remove from shopping list |
 | `calendar`, `agenda`, `appointments`, `what do I have today?` | show today's events |
 
-**Voice messages** — voice notes (PTT) are automatically transcribed. If the transcription is not understandable, the bot asks you to repeat.
+**Voice messages** — voice notes (PTT) are automatically transcribed in any language. If the transcription is not understandable, the bot asks you to repeat.
 
 ### Shopping List
 
