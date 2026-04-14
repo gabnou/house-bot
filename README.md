@@ -200,7 +200,7 @@ ollama serve &
 ./housebot.sh start
 ```
 
-Then open **http://localhost:5252** and use the **Installation** wizard to:
+Then open **http://localhost:8000** and use the **Installation** wizard to:
 - Configure `.env` (Ollama model, location, partners, calendar, timezone …)
 - Set up Google Calendar OAuth
 - Pair WhatsApp via QR code
@@ -247,6 +247,25 @@ chmod +x housebot.sh
 ```
 
 > **UI development:** `./housebot.sh ui-dev` starts the Vite dev server at **http://localhost:5252** with HMR — for UI development only. It proxies `/admin/api/*` to the FastAPI server at `:8000`, so the bot must be running alongside. In production, always use **http://localhost:8000**.
+
+### UI development
+
+When working on the Control Panel source files (`ui/src/`), use the Vite dev server for instant feedback via HMR:
+
+```bash
+# Terminal 1 — bot must be running
+ollama serve &
+./housebot.sh start
+
+# Terminal 2 — UI dev server
+./housebot.sh ui-dev
+```
+
+The dev server is always available at **http://localhost:5252** and proxies all `/admin/api/*` calls to the bot at `:8000`. When you’re done, rebuild the production bundle:
+
+```bash
+./housebot.sh ui-build
+```
 
 ### Typical startup
 

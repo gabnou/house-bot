@@ -248,7 +248,8 @@ All config is in `.env` (see `.env.example`). Key variables:
 - No external cloud services except: Open-Meteo (free), Google Calendar API, WhatsApp (Meta)
 
 ## Copilot Agent Behaviours
-- Always let the user reqrite files or fix typos if you are not able to do it. Don't create external scripts to write files, just ask the user to do it.
+- Always identify the current git branch before making changes. State the branch name at the start of any coding session or when switching context.
+- Always let the user rewrite files or fix typos if you are not able to do it. Don't create external scripts to write files, just ask the user to do it.
 - If you need to write code, write it in the correct file and in the correct place, don't write it in a separate file and then ask the user to move it.
 - If you need to change code in a file, write the full file content with the changes included, don't write only the changed lines or a diff.
 - If you need to add a new file, write the full file content and the file path, don't write only the file content or only the file path.
