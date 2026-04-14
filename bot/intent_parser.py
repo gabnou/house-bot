@@ -145,7 +145,8 @@ def translate_to_english(text: str, source_language: str) -> str | None:
     """Translate text from a detected language to English using the LLM."""
     prompt = (
         f"Translate the following {source_language} text to English. "
-        "Respond ONLY with the English translation, nothing else.\n\n"
+        "Respond ONLY with the English translation, nothing else. "
+        "Translate only the action/command words; do NOT translate proper nouns, personal names, or specific event/item titles — keep those exactly as they appear in the original text.\n\n"
         f"Text: \"{text}\"\nTranslation:"
     )
     try:
@@ -167,7 +168,8 @@ def translate_from_english(text: str, target_language: str) -> str | None:
     """Translate an English response to the target language using the LLM."""
     prompt = (
         f"Translate the following English text to {target_language}. "
-        "Respond ONLY with the translation, nothing else.\n\n"
+        "Respond ONLY with the translation, nothing else. "
+        "Do NOT translate proper nouns, personal names, or event titles — keep them exactly as they appear in the original text.\n\n"
         f"Text: \"{text}\"\nTranslation:"
     )
     try:

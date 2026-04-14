@@ -99,12 +99,6 @@ app = FastAPI(lifespan=lifespan)
 # Admin API router
 app.include_router(admin_router)
 
-# Serve the SvelteKit production build (ui/build/) if it exists
-_UI_BUILD = Path(__file__).parent.parent / "ui" / "build"
-if _UI_BUILD.exists():
-    app.mount("/", StaticFiles(directory=str(_UI_BUILD), html=True), name="ui")
-    logger.info("🖥️  Admin UI served from %s", _UI_BUILD)
-
 # Request models
 class Message(BaseModel):
     sender: str
@@ -272,3 +266,11 @@ async def handle_message(msg: Message):
             reply = translated_reply
 
     return {"reply": reply, "notification": notification}
+
+# Serve the SvelteKit production build (ui/build/) if it exists
+# IMPORTANT: must be mounted AFTER all API routes — Mount("/") intercepts every path,
+# and StaticFiles only handles GET/HEAD, so it would return 405 for API POST endpoints.
+_UI_BUILD = Path(__file__).parent.parent / "ui" / "build"
+if _UI_BUILD.exists():
+    app.mount("/", StaticFiles(directory=str(_UI_BUILD), html=True), name="ui")
+    logger.info("🖥️  Admin UI served from %s", _UI_BUILD)
