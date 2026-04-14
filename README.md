@@ -182,14 +182,16 @@ ollama pull llama3.1:8b
 # WhatsApp bridge
 cd bridge && npm install && cd ..
 
-# Control panel UI
-cd ui && npm install && npm run build && cd ..
+# Control panel UI (install + production build)
+./housebot.sh ui-build
 
 # Python environment
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
+
+> The production UI build is placed in `ui/build/` and served statically by FastAPI at `http://localhost:8000/`. You only need to rebuild when UI source files change (`./housebot.sh ui-build`).
 
 ### 5 — Start and configure via the UI
 
@@ -211,6 +213,18 @@ Then open **http://localhost:5252** and use the **Installation** wizard to:
 
 `housebot.sh` manages all processes from the CLI. Once the bot is running, day-to-day management (service control, model switching, log viewing, prompt editing) is available in the **Control Panel** at **http://localhost:5252**.
 
+### Tech stack
+
+| Layer | Technology | Port |
+|---|---|---|
+| WhatsApp bridge | Node.js + Baileys | 3001 (internal) |
+| Bot API | Python + FastAPI (uvicorn) | 8000 |
+| Local LLM | Ollama | 11434 (default) |
+| Speech-to-text | faster-whisper | (in-process) |
+| Control Panel | SvelteKit + Skeleton UI + Tailwind v4 | served at :8000/ |
+
+The Control Panel production build (`ui/build/`) is served statically by FastAPI. No separate server is needed in production — everything is on port **8000** and proxied through the bot.
+
 ### Make the script executable (first time only)
 
 ```bash
@@ -228,9 +242,11 @@ chmod +x housebot.sh
 ./housebot.sh logs-live    # follow all process logs in real time
 ./housebot.sh logs-rotate  # manually rotate logs (also runs automatically on start)
 ./housebot.sh qr           # follow bridge log in real time (for QR code on first run)
-./housebot.sh ui-build     # rebuild the control panel UI
-./housebot.sh ui-dev       # start Vite dev server (for UI development only)
+./housebot.sh ui-build     # rebuild the control panel UI (run after pulling UI changes)
+./housebot.sh ui-dev       # start Vite dev server on :5252 (UI development only)
 ```
+
+> **UI development:** `./housebot.sh ui-dev` starts the Vite dev server at **http://localhost:5252** with HMR. It proxies `/admin/api/*` to the FastAPI server at `:8000`, so the bot must be running alongside.
 
 ### Typical startup
 
