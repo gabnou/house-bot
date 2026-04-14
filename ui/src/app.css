@@ -1,0 +1,9 @@
+/* Tailwind v4 */
+@import 'tailwindcss';
+
+/* Use .dark class for dark mode (instead of prefers-color-scheme media query) */
+@variant dark (&:where(.dark, .dark *));
+
+/* Skeleton UI – cerberus theme + utilities (relative to bypass exports glob resolver) */
+@import '../node_modules/@skeletonlabs/skeleton/src/themes/cerberus.css';
+@import '../node_modules/@skeletonlabs/skeleton/src/index.css';

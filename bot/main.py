@@ -25,11 +25,13 @@ logger = logging.getLogger(__name__)
 
 # Third-party and local imports
 from fastapi import FastAPI, UploadFile, File
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 from faster_whisper import WhisperModel
 from services.shopping_db import init_db
 from intent_parser import parse_intent, detect_category, validate_transcription, detect_language, translate_to_english, translate_from_english, classify_intent_category
+from admin.router import router as admin_router
 
 # List of partner JIDs from env
 PARTNER = [
@@ -93,6 +95,15 @@ async def lifespan(app: FastAPI):
 
 # FastAPI app instance
 app = FastAPI(lifespan=lifespan)
+
+# Admin API router
+app.include_router(admin_router)
+
+# Serve the SvelteKit production build (ui/build/) if it exists
+_UI_BUILD = Path(__file__).parent.parent / "ui" / "build"
+if _UI_BUILD.exists():
+    app.mount("/", StaticFiles(directory=str(_UI_BUILD), html=True), name="ui")
+    logger.info("🖥️  Admin UI served from %s", _UI_BUILD)
 
 # Request models
 class Message(BaseModel):

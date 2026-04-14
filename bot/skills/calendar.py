@@ -172,6 +172,7 @@ Available actions:
 - calendar_edit: {{"action": "calendar_edit", "title": "...", "new_title": null, "new_date": null, "new_time": null, "new_location": null}}
 - calendar_details: {{"action": "calendar_details", "title": "..."}}
 
+Action names must use underscores, never hyphens or spaces (e.g. calendar_add, NOT calendar-add or calendar add).
 IMPORTANT: Words like "appointment", "event", "reminder", "meeting" are generic and are NOT part of the title. The title is the specific event name (e.g. "concert of Pixies", "dinner with Mark", "doctor visit").
 
 Examples:

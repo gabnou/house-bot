@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en" data-theme="cerberus">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>HouseBot Control Panel</title>
+		<link rel="icon" href="/housebot_icon.svg" type="image/svg+xml" />
+		%sveltekit.head%
+		<script>
+			// Restore dark mode preference before first paint to avoid flash
+			const stored = localStorage.getItem('colorMode');
+			if (stored === 'dark' || (!stored && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+				document.documentElement.classList.add('dark');
+			}
+		</script>
+	</head>
+	<body data-sveltekit-preload-data="hover" class="min-h-screen bg-white dark:bg-gray-950">
+		<div style="display: contents">%sveltekit.body%</div>
+	</body>
+</html>

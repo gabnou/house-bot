@@ -187,6 +187,7 @@ Upcoming days table (use this to translate weekday → date):
 {table_str}
 
 If city is not specified use null. Default days=3, default hours=12 (max 24).
+Action names must use underscores, never hyphens or spaces (e.g. weather_now, NOT weather-now or weather now).
 
 Examples:
 Message: "weather"
