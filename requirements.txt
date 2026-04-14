@@ -2,6 +2,7 @@ fastapi
 uvicorn
 requests
 python-dotenv
+pydantic-ai-slim[openai]
 google-auth
 google-auth-oauthlib
 google-auth-httplib2

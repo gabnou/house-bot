@@ -23,7 +23,7 @@ Domestic WhatsApp bot for shared management of a shopping list between multiple 
 ## Features
 
 - **Shopping list** — add, remove, view and manage by category (food, other, clothing, health)
-- **Weather** — current conditions and forecasts via OpenWeatherMap (primary) with Open-Meteo fallback
+- **Weather** — current conditions and forecasts via Open-Meteo (free, no key required)
 - **Google Calendar** — read, add, edit and delete events (calendar configurable via `.env`)
 - **Voice messages** — voice notes (PTT) automatically transcribed with faster-whisper (local), validated by the LLM and processed as normal commands
 - **Multi-language support** — the bot is English by default to keep it international, but if a message in a different language is not understood, the bot automatically detects the language, translates the message to English, re-runs the command pipeline, and replies in the detected language
@@ -41,17 +41,60 @@ WhatsApp (Partner 1 / Partner 2)
 WhatsApp Servers (Meta)
         │  WebSocket session
         ▼
-Baileys Bridge (Node.js)      ← bridge/index.js
+Baileys Bridge (Node.js)         ← bridge/index.js
         │  HTTP
         ▼
-FastAPI Server (Python)       ← bot/main.py
-   ├── Transcribe (Whisper)   ← bot/main.py /transcribe → faster-whisper (local) + LLM validation
-   ├── Intent Parser          ← bot/intent_parser.py  →  Ollama (local LLM)
-   ├── DB Handler             ← bot/db_handler.py     →  SQLite (shopping_list.db)
-   ├── Weather                ← bot/weather.py        →  OpenWeatherMap API / Open-Meteo (fallback)
-   ├── Calendar Handler       ← bot/calendar_handler.py → Google Calendar API
-   └── Scheduler              ← bot/scheduler.py      →  briefing 07:30
+FastAPI Server (Python)          ← bot/main.py
+   ├── Whisper (transcription)   ← faster-whisper (local)
+   ├── Intent Parser             ← bot/intent_parser.py → Ollama (local LLM)
+   ├── Orchestrator              ← bot/orchestrator.py  → Skills registry
+   │       └── Skills            ← bot/skills/  (shopping, weather, calendar)
+   │               └── Services  ← services/ (DB, weather API, Google Calendar)
+   └── Scheduler                 ← bot/scheduler.py     → morning briefing
 ```
+
+### Request flow
+
+Every inbound message follows this exact sequence — **one LLM call, one action, one reply**. There is no reasoning loop by design: HouseBot handles simple, direct requests and the single-shot approach keeps latency low and output predictable.
+
+```text
+Incoming message
+      │
+      ▼
+ language detection + translation (LLM, only if non-English)
+      │
+      ▼
+ pre_route()  ──── fast regex match (no LLM) ───► action dict
+      │ (miss)
+      ▼
+ parse_intent()  ── LLM call → JSON {"action": "...", ...} ──► action dict
+      │
+      ▼
+ orchestrator.py
+      │  action_to_tool("weather_forecast") → "weather.forecast"
+      ▼
+ bot/skills/registry  →  get("weather.forecast")  →  forecast_tool(payload)
+      │
+      ▼
+ services/weather.py  →  get_weather_forecast(...)  →  string reply
+      │
+      ▼
+ translate reply back (LLM, only if non-English)
+      │
+      ▼
+  {"reply": "...", "notification": "..."}
+```
+
+### Why the skills layer matters
+
+The `bot/skills/` package is the extension point of the bot. Each domain (shopping, weather, calendar) registers its tools in a central registry with:
+- **Pydantic input schema** — parameters are validated before any business logic runs
+- **Own LLM prompt** — the `register_prompt()` call lets each skill own its few-shot examples, keeping domains isolated
+- **Callable** — a plain Python function that maps the validated payload to a `services/` call and returns a dict
+
+Adding a new capability (e.g. home automation, reminders) means creating a new `bot/skills/X.py` file with one or more `register()` calls — no changes to `main.py`, `orchestrator.py`, or any other skill.
+
+This is intentionally **not** an agentic loop. HouseBot does not let the LLM chain multiple tool calls or reason across steps. One message → one intent → one tool → one reply. This trade-off is deliberate: for a household WhatsApp bot with simple, direct requests, a reasoning loop would add latency, hallucination risk, and complexity without meaningful benefit.
 
 ---
 
@@ -64,18 +107,29 @@ house-bot/
 │   ├── index.js                        ← Baileys WhatsApp bridge
 │   └── baileys_auth/                   ← WhatsApp session (auto-generated)
 ├── bot/
-│   ├── main.py                         ← FastAPI server
+│   ├── main.py                         ← FastAPI server (entry point)
 │   ├── intent_parser.py                ← LLM parsing → JSON action
-│   ├── db_handler.py                   ← SQLite CRUD
-│   ├── weather.py                      ← OpenWeatherMap + Open-Meteo integration
-│   ├── calendar_handler.py             ← Google Calendar integration
+│   ├── orchestrator.py                 ← routes action → skill
 │   ├── scheduler.py                    ← morning briefing
-│   └── schema.sql                      ← database schema
+│   ├── skills/
+│   │   ├── __init__.py                 ← registers all skills on import
+│   │   ├── registry.py                 ← central tool registry
+│   │   ├── schemas.py                  ← shared Pydantic output schema
+│   │   ├── utils.py                    ← reply formatting helpers
+│   │   ├── shopping.py                 ← shopping list tools + LLM prompt
+│   │   ├── weather.py                  ← weather tools + LLM prompt
+│   │   └── calendar.py                 ← calendar tools + LLM prompt
+│   └── services/
+│       ├── shopping_db.py              ← Shopping list SQLite CRUD
+│       ├── weather.py                  ← Open-Meteo integration
+│       ├── calendar_handler.py         ← Google Calendar integration
+│       └── db/
+│           ├── shoppinglist_schema.sql ← database schema
+│           └── shoppinglist.db         ← SQLite database (auto-generated)
 ├── creds/
 │   ├── client_google_api_calendar.json ← Google OAuth credentials (download manually)
 │   └── token.json                      ← OAuth token (auto-generated)
 ├── logs/                               ← process logs (generated by housebot.sh)
-├── shopping_list.db                    ← SQLite database (auto-generated)
 ├── .venv/                              ← Python virtual environment (generated)
 ├── .env                                ← environment variables (create manually)
 ├── .github/
@@ -152,7 +206,7 @@ pip install -r requirements.txt
 
 ```bash
 source .venv/bin/activate
-cd bot && python -c "from calendar_handler import get_service; get_service()" && cd ..
+python -c "from services.calendar_handler import get_service; get_service()"
 ```
 
 The token is saved in `creds/token.json` and does not need renewal unless revoked.

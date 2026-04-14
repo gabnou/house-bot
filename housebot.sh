@@ -88,7 +88,7 @@ start() {
     if [ -f "$LOG_DIR/fastapi.pid" ] && kill -0 $(cat "$LOG_DIR/fastapi.pid") 2>/dev/null; then
         echo "✅ FastAPI was already running"
     else
-        nohup bash -c "cd '$PROJECT_DIR/bot' && '$PROJECT_DIR/venv/bin/python' -m uvicorn main:app --port 8000 --log-level $LOG_LEVEL" \
+        nohup bash -c "cd '$PROJECT_DIR/bot' && '$PROJECT_DIR/.venv/bin/python' -m uvicorn main:app --port 8000 --log-level $LOG_LEVEL" \
             > "$LOG_DIR/fastapi.log" 2>&1 &
         echo $! > "$LOG_DIR/fastapi.pid"
         echo "✅ FastAPI started (PID $(cat $LOG_DIR/fastapi.pid))"
@@ -107,7 +107,7 @@ start() {
     # Scheduler — kill ALL running scheduler instances
     pkill -f "scheduler.py" 2>/dev/null
     sleep 1
-    nohup bash -c "cd '$PROJECT_DIR/bot' && '$PROJECT_DIR/venv/bin/python' scheduler.py" \
+    nohup bash -c "cd '$PROJECT_DIR/bot' && '$PROJECT_DIR/.venv/bin/python' scheduler.py" \
         > "$LOG_DIR/scheduler.log" 2>&1 &
     echo $! > "$LOG_DIR/scheduler.pid"
     echo "✅ Scheduler started (PID $(cat $LOG_DIR/scheduler.pid))"
@@ -141,7 +141,7 @@ watchdog_loop() {
             FASTAPI_PID=$(cat "$LOG_DIR/fastapi.pid")
             if ! kill -0 "$FASTAPI_PID" 2>/dev/null; then
                 echo "$(date '+%Y-%m-%d %H:%M:%S') ⚠️  FastAPI died (PID $FASTAPI_PID) — restarting..." >> "$LOG_DIR/watchdog.log"
-                nohup bash -c "cd '$PROJECT_DIR/bot' && '$PROJECT_DIR/venv/bin/python' -m uvicorn main:app --port 8000 --log-level $LOG_LEVEL" \
+                nohup bash -c "cd '$PROJECT_DIR/bot' && '$PROJECT_DIR/.venv/bin/python' -m uvicorn main:app --port 8000 --log-level $LOG_LEVEL" \
                     >> "$LOG_DIR/fastapi.log" 2>&1 &
                 echo $! > "$LOG_DIR/fastapi.pid"
                 echo "$(date '+%Y-%m-%d %H:%M:%S') ✅ FastAPI restarted (PID $!)" >> "$LOG_DIR/watchdog.log"
@@ -153,7 +153,7 @@ watchdog_loop() {
             SCHED_PID=$(cat "$LOG_DIR/scheduler.pid")
             if ! kill -0 "$SCHED_PID" 2>/dev/null; then
                 echo "$(date '+%Y-%m-%d %H:%M:%S') ⚠️  Scheduler died (PID $SCHED_PID) — restarting..." >> "$LOG_DIR/watchdog.log"
-                nohup bash -c "cd '$PROJECT_DIR/bot' && '$PROJECT_DIR/venv/bin/python' scheduler.py" \
+                nohup bash -c "cd '$PROJECT_DIR/bot' && '$PROJECT_DIR/.venv/bin/python' scheduler.py" \
                     >> "$LOG_DIR/scheduler.log" 2>&1 &
                 echo $! > "$LOG_DIR/scheduler.pid"
                 echo "$(date '+%Y-%m-%d %H:%M:%S') ✅ Scheduler restarted (PID $!)" >> "$LOG_DIR/watchdog.log"
@@ -259,6 +259,7 @@ except:
 logs_live() {
     LOGS="$LOG_DIR/bridge.log $LOG_DIR/fastapi.log $LOG_DIR/scheduler.log"
     [ -f "$LOG_DIR/ollama.log" ] && LOGS="$LOGS $LOG_DIR/ollama.log"
+    [ -f "$HOME/.ollama/logs/server.log" ] && LOGS="$LOGS $HOME/.ollama/logs/server.log"
     tail -f $LOGS
 }
 
