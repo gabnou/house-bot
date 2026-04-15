@@ -4,9 +4,9 @@
 	const steps = [
 		{
 			n: 1,
-			icon: '🔍',
-			label: 'Prerequisites',
-			desc: 'Verify Ollama is running, Python venv exists, and Node.js is installed.',
+			icon: '🤖',
+			label: 'Ollama — AI Models',
+			desc: 'Select and pull a local LLM model to power the bot (e.g. mistral-small:22b or llama3.1:8b).',
 			phase: 5,
 		},
 		{
