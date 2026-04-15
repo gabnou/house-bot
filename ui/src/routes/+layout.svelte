@@ -61,7 +61,7 @@
 </script>
 
 <svelte:head>
-	<title>HouseBot — {currentLabel}</title>
+	<title>housebot — {currentLabel}</title>
 </svelte:head>
 
 <div class="flex h-screen overflow-hidden">
@@ -120,7 +120,7 @@
 		{#if $page.url.pathname !== '/'}
 		<header class="flex items-center px-6 py-3 border-b border-surface-200-800 shrink-0">
 			<a href="/" title="Back to home">
-				<img src="/housebot_logo.svg" alt="Home" class="h-9 w-auto opacity-80 hover:opacity-100 transition-opacity" />
+				<img src={isDark ? '/housebot_logo_v2_small_dark.png' : '/housebot_logo_v2_small.png'} alt="Home" class="h-9 w-auto opacity-80 hover:opacity-100 transition-opacity" />
 			</a>
 			<p class="ml-4 text-sm text-surface-400-600">
 				Domestic WhatsApp bot — shopping list, weather, and Google Calendar.

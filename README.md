@@ -1,12 +1,14 @@
 # HouseBot
 
+![housebot-logo](img/housebot_logo_v2_small.png)
 
 Domestic WhatsApp bot for shared management of a shopping list between multiple partners, weather, and a shared Google Calendar. It also supports speech-to-text capabilities, automatically transcribing voice messages using a local model. Runs entirely locally on your own computer — no data is sent to external clouds except for explicitly configured third-party APIs.
 
 **Tested on macOS (MacBook).** Local setup steps and requirements may differ on Windows or Linux systems, especially regarding Python, Node.js, and hardware compatibility. Adjustments may be needed for your specific architecture.
 
-**Memory requirements depend on the LLM model you choose:**
-- For example, `mistral-small:22b` requires at least 16GB of RAM.
+**Memory requirements depend on the LLM model you choose:** LLM models are very memory intensive. For example:
+
+- `mistral-small:22b` requires at least 16GB of RAM.
 - Lighter models like `llama3.1:8b` can run on systems with 8GB of RAM or more.
 - See the [Ollama models page](https://ollama.com/library) for a full list of available models and their memory requirements.
 
