@@ -6,7 +6,7 @@ import subprocess
 from collections import deque
 from pathlib import Path
 from fastapi import APIRouter, Query, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -462,3 +462,137 @@ async def reset_prompt(skill: str):
         logger.info("↩️  Prompt reset to default: %s", skill)
         return JSONResponse(content={"ok": True, "skill": skill, "is_override": False})
     return JSONResponse(content={"ok": True, "skill": skill, "is_override": False, "note": "already default"})
+
+
+# ── Installation Wizard ──────────────────────────────────────────────────────
+
+class PullModelRequest(BaseModel):
+    model: str
+
+
+class ChatTestRequest(BaseModel):
+    model: str
+    message: str
+
+
+@router.post("/install/ollama/pull")
+async def install_ollama_pull(req: PullModelRequest):
+    """
+    Stream ollama model pull progress as Server-Sent Events.
+    Each event is a raw JSON line from Ollama's /api/pull response.
+    A final {"done": true} event signals completion.
+    """
+    import json as _json
+    import requests as _req
+
+    model = req.model.strip()
+    if not model:
+        raise HTTPException(status_code=400, detail="model is required")
+
+    base = _ollama_base()
+
+    def _stream():
+        try:
+            with _req.post(
+                f"{base}/api/pull",
+                json={"model": model},
+                stream=True,
+                timeout=3600,
+            ) as r:
+                for raw in r.iter_lines():
+                    if raw:
+                        yield f"data: {raw.decode('utf-8')}\n\n"
+        except Exception as exc:
+            yield f"data: {_json.dumps({'error': str(exc)})}\n\n"
+        yield 'data: {"done":true}\n\n'
+
+    return StreamingResponse(
+        _stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.post("/install/ollama/chat")
+async def install_ollama_chat(req: ChatTestRequest):
+    """
+    Stream a chat prompt to Ollama as Server-Sent Events.
+    Each event carries a JSON token: {"token": "..."}.
+    A final {"done": true} event signals the end of the response.
+    """
+    import json as _json
+    import requests as _req
+
+    model = req.model.strip()
+    message = req.message.strip()
+    if not model or not message:
+        raise HTTPException(status_code=400, detail="model and message are required")
+
+    base = _ollama_base()
+
+    def _stream():
+        # Yield an SSE comment immediately so the proxy/browser knows the
+        # connection is alive even while Ollama is loading the model (~10s).
+        yield ': connected\n\n'
+        try:
+            with _req.post(
+                f"{base}/api/generate",
+                json={"model": model, "prompt": message, "stream": True},
+                stream=True,
+                timeout=120,
+            ) as r:
+                for raw in r.iter_lines():
+                    if not raw:
+                        continue
+                    try:
+                        chunk = _json.loads(raw.decode("utf-8"))
+                        token = chunk.get("response", "")
+                        if token:
+                            yield f"data: {_json.dumps({'token': token})}\n\n"
+                        if chunk.get("done"):
+                            break
+                    except Exception:
+                        pass
+        except Exception as exc:
+            yield f"data: {_json.dumps({'error': str(exc)})}\n\n"
+        yield 'data: {"done":true}\n\n'
+
+    return StreamingResponse(
+        _stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ── Keep-alive setting ───────────────────────────────────────────────────────
+
+@router.get("/install/system-info")
+async def install_system_info():
+    """Return system RAM in GB (macOS only via sysctl)."""
+    try:
+        raw = subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True).strip()
+        ram_gb = int(raw) // (1024 ** 3)
+    except Exception:
+        ram_gb = None
+    return JSONResponse(content={"ram_gb": ram_gb})
+
+
+@router.get("/install/ollama/keep-alive")
+async def get_keep_alive():
+    """Return the current OLLAMA_KEEP_ALIVE value from .env (or OS env)."""
+    value = os.getenv("OLLAMA_KEEP_ALIVE", "")
+    return JSONResponse(content={"value": value})
+
+
+class KeepAliveRequest(BaseModel):
+    value: str
+
+
+@router.post("/install/ollama/keep-alive")
+async def set_keep_alive(req: KeepAliveRequest):
+    """Write OLLAMA_KEEP_ALIVE to .env."""
+    value = req.value.strip()
+    _env_set("OLLAMA_KEEP_ALIVE", value)
+    os.environ["OLLAMA_KEEP_ALIVE"] = value
+    logger.info("⏱️  OLLAMA_KEEP_ALIVE set to %s", value)
+    return JSONResponse(content={"ok": True, "value": value})
