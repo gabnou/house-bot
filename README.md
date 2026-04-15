@@ -1,4 +1,4 @@
-# HouseBot
+# housebot
 
 ![housebot-logo](img/housebot_logo_v2_small.png)
 
