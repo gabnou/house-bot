@@ -346,7 +346,7 @@
 				class="w-full p-4 flex items-center gap-4 text-left hover:bg-surface-100-900/50 transition-colors"
 			>
 				<div class="w-9 h-9 rounded-full bg-surface-100-900 border border-surface-200-800 flex items-center justify-center text-lg shrink-0">
-					{step1Done ? '✅' : '🤖'}
+					🧠
 				</div>
 				<div class="flex-1 min-w-0">
 					<p class="font-semibold text-sm">
@@ -357,6 +357,8 @@
 				</div>
 				{#if installedModels.length > 0}
 					<span class="text-xs text-success-400 shrink-0 mr-1">{installedModels.length} installed</span>
+				{:else if !modelsLoading}
+					<span class="px-2 py-0.5 rounded-full text-xs font-medium bg-error-500/10 text-error-400/70 shrink-0 mr-1">pending</span>
 				{/if}
 				<span class="text-surface-400-600 text-xs shrink-0">{step1Open ? '▲' : '▼'}</span>
 			</button>
@@ -568,6 +570,7 @@
 					</p>
 					<p class="text-xs text-surface-400-600 mt-0.5 truncate">{step.desc}</p>
 				</div>
+				<span class="px-2 py-0.5 rounded-full text-xs font-medium bg-error-500/10 text-error-400/70 shrink-0">pending</span>
 			</div>
 		{/each}
 
