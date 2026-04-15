@@ -1,12 +1,14 @@
-# HouseBot
+# housebot
 
+![housebot-logo](img/housebot_logo_v2_small.png)
 
 Domestic WhatsApp bot for shared management of a shopping list between multiple partners, weather, and a shared Google Calendar. It also supports speech-to-text capabilities, automatically transcribing voice messages using a local model. Runs entirely locally on your own computer — no data is sent to external clouds except for explicitly configured third-party APIs.
 
 **Tested on macOS (MacBook).** Local setup steps and requirements may differ on Windows or Linux systems, especially regarding Python, Node.js, and hardware compatibility. Adjustments may be needed for your specific architecture.
 
-**Memory requirements depend on the LLM model you choose:**
-- For example, `mistral-small:22b` requires at least 16GB of RAM.
+**Memory requirements depend on the LLM model you choose:** LLM models are very memory intensive. For example:
+
+- `mistral-small:22b` requires at least 16GB of RAM.
 - Lighter models like `llama3.1:8b` can run on systems with 8GB of RAM or more.
 - See the [Ollama models page](https://ollama.com/library) for a full list of available models and their memory requirements.
 
@@ -200,7 +202,7 @@ ollama serve &
 ./housebot.sh start
 ```
 
-Then open **http://localhost:5252** and use the **Installation** wizard to:
+Then open **http://localhost:8000** and use the **Installation** wizard to:
 - Configure `.env` (Ollama model, location, partners, calendar, timezone …)
 - Set up Google Calendar OAuth
 - Pair WhatsApp via QR code
@@ -247,6 +249,25 @@ chmod +x housebot.sh
 ```
 
 > **UI development:** `./housebot.sh ui-dev` starts the Vite dev server at **http://localhost:5252** with HMR — for UI development only. It proxies `/admin/api/*` to the FastAPI server at `:8000`, so the bot must be running alongside. In production, always use **http://localhost:8000**.
+
+### UI development
+
+When working on the Control Panel source files (`ui/src/`), use the Vite dev server for instant feedback via HMR:
+
+```bash
+# Terminal 1 — bot must be running
+ollama serve &
+./housebot.sh start
+
+# Terminal 2 — UI dev server
+./housebot.sh ui-dev
+```
+
+The dev server is always available at **http://localhost:5252** and proxies all `/admin/api/*` calls to the bot at `:8000`. When you’re done, rebuild the production bundle:
+
+```bash
+./housebot.sh ui-build
+```
 
 ### Typical startup
 
