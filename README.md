@@ -29,7 +29,7 @@ Domestic WhatsApp bot for shared management of a shopping list between multiple 
 - **Google Calendar** — read, add, edit and delete events (calendar configurable via `.env`)
 - **Voice messages** — voice notes (PTT) automatically transcribed with faster-whisper (local), validated by the LLM and processed as normal commands
 - **Multi-language support** — the bot is English by default to keep it international, but if a message in a different language is not understood, the bot automatically detects the language, translates the message to English, re-runs the command pipeline, and replies in the detected language
-- **Morning briefing** — automatic message at 07:30 (local time) with weather, today's events and motivational quote. Set `BRIEFING_TIME` in `.env` (e.g. `08:00`) to change the schedule. The briefing is in English by default; set `BRIEFING_LANGUAGE` in `.env` (e.g. `Spanish`, `Italian`) to receive it in a different language
+- **Morning briefing** — automatic message at 07:30 (local time) with weather, today's events and a motivational quote. The schedule and language are configured in the Installation Wizard (Step 5). You can also set `BRIEFING_TIME` and `BRIEFING_LANGUAGE` directly in `.env`
 - **Free conversation** — LLM-generated replies for messages not recognized as commands
 
 ---
@@ -158,56 +158,33 @@ git clone <repo-url> house-bot
 cd house-bot
 ```
 
-### 2 — Install Node.js and Ollama
+### 2 — Run the installer
 
 ```bash
-brew install node
-brew install ollama
+chmod 755 install.sh
+./install.sh
 ```
 
-### 3 — Download the LLM model
+The installer handles everything automatically (macOS only):
+- Installs Homebrew, Python 3.11+, Node.js, and Ollama if missing
+- Creates the Python virtual environment and installs all dependencies
+- Installs bridge Node.js dependencies and builds the Control Panel UI
+- Creates a default `.env` from `.env.example`
+- Starts Ollama and all HouseBot services
 
-```bash
-ollama serve &
-ollama pull mistral-small:22b
-```
+### 3 — Complete setup in the Installation Wizard
 
-For a lighter model (requires less RAM):
+When the installer finishes, open **[http://localhost:8000/install](http://localhost:8000/install)** and follow the step-by-step wizard. There is no need to edit `.env` manually — the wizard covers everything:
 
-```bash
-ollama pull llama3.1:8b
-```
+| Step | What it does |
+|---|---|
+| **1. Ollama — AI Models** | Choose and pull a local LLM model; set the keep-alive timeout; test the model with a chat prompt |
+| **2. Google OAuth** | Authorize Google Calendar access and store the OAuth token (requires `creds/client_google_api_calendar.json` from Google Cloud Console) |
+| **3. WhatsApp Pairing** | Scan the QR code to link the dedicated WhatsApp number; set the linked-device display name (`WHATSAPP_APPNAME`) |
+| **4. Sender Restrictions** | Send a message from each partner's phone, scan for it here, and authorize the JID — saved automatically to `.env` |
+| **5. Location & Briefing** | Search for your city on a map to auto-fill coordinates and timezone; pick the morning briefing language |
 
-### 4 — Install dependencies
-
-```bash
-# WhatsApp bridge
-cd bridge && npm install && cd ..
-
-# Control panel UI (install + production build)
-./housebot.sh ui-build
-
-# Python environment
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-> The production UI build is placed in `ui/build/` and served statically by FastAPI at `http://localhost:8000/`. You only need to rebuild when UI source files change (`./housebot.sh ui-build`).
-
-### 5 — Start and configure via the UI
-
-```bash
-ollama serve &
-./housebot.sh start
-```
-
-Then open **http://localhost:8000** and use the **Installation** wizard to:
-- Configure `.env` (Ollama model, location, partners, calendar, timezone …)
-- Set up Google Calendar OAuth
-- Pair WhatsApp via QR code
-- Discover partner JIDs
-- Run a smoke test
+All settings are saved directly to `.env` and take effect immediately (a bridge restart is prompted when needed).
 
 ---
 

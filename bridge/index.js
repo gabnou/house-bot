@@ -1,10 +1,12 @@
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const qrcode = require('qrcode-terminal');
+const QRCode = require('qrcode');
 const axios = require('axios');
 const FormData = require('form-data');
 const pino = require('pino');
 const path = require('path');
+const fs = require('fs');
 const express = require('express');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
@@ -12,12 +14,13 @@ const FASTAPI_URL = 'http://localhost:8000';
 
 const PARTNER = (process.env.PARTNER_LID || '')
     .split(',')
-    .map(s => s.trim())
+    .map(s => s.split(':')[0].trim())
     .filter(Boolean);
 
 let sock = null;
 let isConnected = false;
 let isRestarting = false;
+let lastQrString = null;
 
 // ── Async message queue ──────────────────────────────────────────────────────
 // The WA event handler pushes here and returns immediately; drainQueue()
@@ -134,6 +137,25 @@ function serializedSend(jid, text) {
 const app = express();
 app.use(express.json());
 
+app.get('/health', (req, res) => {
+    res.json({ ok: true, connected: isConnected });
+});
+
+app.get('/qr', async (req, res) => {
+    if (isConnected) {
+        return res.json({ connected: true });
+    }
+    if (!lastQrString) {
+        return res.status(503).json({ connected: false, error: 'QR not yet generated — bridge may still be starting' });
+    }
+    try {
+        const dataUrl = await QRCode.toDataURL(lastQrString, { width: 300, margin: 2 });
+        res.json({ connected: false, qr: dataUrl });
+    } catch (err) {
+        res.status(500).json({ connected: false, error: err.message });
+    }
+});
+
 app.post('/send', async (req, res) => {
     const { jid, text } = req.body;
     console.log(`📨 /send received — jid: ${jid}, text: ${text?.slice(0, 50)}`);
@@ -191,11 +213,13 @@ async function startBot() {
 
     console.log(`🔧 Using WA version: ${version.join('.')}`);
 
+    const appName = (process.env.WHATSAPP_APPNAME || 'HouseBot').slice(0, 20);
+
     const localSock = makeWASocket({
         version,
         auth: state,
         logger: pino({ level: 'silent' }),
-        browser: ['HouseBot', 'Chrome', '1.0.0'],
+        browser: [appName, 'Chrome', '1.0.0'],
         connectTimeoutMs: 60000,
         retryRequestDelayMs: 2000,
         getMessage: async () => ({ conversation: '' }),
@@ -207,6 +231,7 @@ async function startBot() {
 
     sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
         if (qr) {
+            lastQrString = qr;
             console.log('\n📱 Scan the QR code with the dedicated number:\n');
             qrcode.generate(qr, { small: true });
         }
@@ -222,7 +247,14 @@ async function startBot() {
             console.log(`🔄 Connection closed. Status: ${statusCode}`);
 
             if (statusCode === DisconnectReason.loggedOut) {
-                console.log('❌ Session expired — delete baileys_auth and restart.');
+                console.log('❌ Session expired — clearing baileys_auth and regenerating QR...');
+                try {
+                    fs.rmSync(path.join(__dirname, 'baileys_auth'), { recursive: true, force: true });
+                    console.log('🗑️  baileys_auth cleared.');
+                } catch (e) {
+                    console.error('⚠️  Could not clear baileys_auth:', e.message);
+                }
+                scheduleRestart(2000);
             } else {
                 scheduleRestart(3000);
             }
@@ -230,6 +262,7 @@ async function startBot() {
 
         if (connection === 'open') {
             isConnected = true;
+            lastQrString = null;  // QR no longer needed once paired
             console.log('✅ House-Bot connected and ready!');
         }
     });
@@ -245,7 +278,7 @@ async function startBot() {
 
             const sender = msg.key.remoteJid;
             if (!PARTNER.includes(sender)) {
-                console.log(`🚫 Message ignored from: ${sender}`);
+                console.log(`🚫 Message ignored from: ${sender} (name: ${msg.pushName || 'unknown'})`);
                 continue;
             }
 

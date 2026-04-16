@@ -102,7 +102,125 @@
 		}
 	}
 
-	onMount(fetchModels);
+	// ── Google Account state ───────────────────────────────────────────────
+	type GoogleStatus = 'unknown' | 'valid' | 'missing' | 'expired' | 'invalid';
+	let googleStatus = $state<GoogleStatus>('unknown');
+	let googleExpiry = $state<string | null>(null);
+	let googleHasRefresh = $state(false);
+	let googleCredsExist = $state(true);
+	let googleFlowRunning = $state(false);
+	let googleAuthUrl = $state<string | null>(null);
+	let googleLoading = $state(false);
+	let googleMsg = $state<{ ok: boolean; text: string } | null>(null);
+
+	let _googlePollTimer: ReturnType<typeof setInterval> | null = null;
+
+	function _startPolling() {
+		if (_googlePollTimer) return;
+		_googlePollTimer = setInterval(async () => {
+			await loadGoogleStatus();
+			if (googleStatus === 'valid') {
+				_stopPolling();
+				googleAuthUrl = null;
+				googleFlowRunning = false;
+				googleMsg = { ok: true, text: 'Token saved — authorization complete!' };
+			}
+		}, 3000);
+	}
+
+	function _stopPolling() {
+		if (_googlePollTimer) { clearInterval(_googlePollTimer); _googlePollTimer = null; }
+	}
+
+	async function loadGoogleStatus() {
+		try {
+			const res = await fetch('/admin/api/google-auth/status');
+			if (res.ok) {
+				const data = await res.json();
+				googleStatus = data.status ?? 'unknown';
+				googleExpiry = data.expiry ?? null;
+				googleHasRefresh = data.has_refresh ?? false;
+				googleCredsExist = data.credentials_exist ?? true;
+				googleFlowRunning = data.flow_running ?? false;
+			}
+		} catch { /* non-fatal */ }
+	}
+
+	async function startGoogleAuth() {
+		googleLoading = true;
+		googleMsg = null;
+		googleAuthUrl = null;
+		try {
+			const res = await fetch('/admin/api/google-auth', { method: 'POST' });
+			const data = await res.json();
+			if (res.ok && data.ok) {
+				googleAuthUrl = data.auth_url;
+				googleFlowRunning = true;
+				window.open(data.auth_url, '_blank', 'noopener,noreferrer');
+				_startPolling();
+			} else {
+				googleMsg = { ok: false, text: data.detail ?? 'Failed to start OAuth flow' };
+			}
+		} catch (e: unknown) {
+			googleMsg = { ok: false, text: e instanceof Error ? e.message : 'Request failed' };
+		} finally {
+			googleLoading = false;
+		}
+	}
+
+	async function refreshGoogleToken() {
+		googleLoading = true;
+		googleMsg = null;
+		try {
+			const res = await fetch('/admin/api/google-auth/refresh', { method: 'POST' });
+			const data = await res.json();
+			if (res.ok && data.ok) {
+				googleMsg = { ok: true, text: 'Token refreshed successfully.' };
+				await loadGoogleStatus();
+			} else {
+				googleMsg = { ok: false, text: data.detail ?? 'Refresh failed' };
+			}
+		} catch (e: unknown) {
+			googleMsg = { ok: false, text: e instanceof Error ? e.message : 'Request failed' };
+		} finally {
+			googleLoading = false;
+		}
+	}
+
+	async function revokeGoogleToken() {
+		googleLoading = true;
+		googleMsg = null;
+		try {
+			const res = await fetch('/admin/api/google-auth', { method: 'DELETE' });
+			const data = await res.json();
+			if (res.ok) {
+				googleMsg = { ok: true, text: 'Token revoked — re-authorization required.' };
+				googleStatus = 'missing';
+				googleExpiry = null;
+				googleAuthUrl = null;
+			} else {
+				googleMsg = { ok: false, text: data.detail ?? 'Revoke failed' };
+			}
+		} catch (e: unknown) {
+			googleMsg = { ok: false, text: e instanceof Error ? e.message : 'Request failed' };
+		} finally {
+			googleLoading = false;
+		}
+	}
+
+	async function pollGoogleStatus() {
+		googleMsg = null;
+		await loadGoogleStatus();
+		if (googleStatus === 'valid') {
+			googleAuthUrl = null;
+			googleFlowRunning = false;
+			googleMsg = { ok: true, text: 'Token saved — authorization complete!' };
+		} else if (googleFlowRunning) {
+			googleMsg = { ok: false, text: 'Not yet — complete the sign-in in the browser tab.' };
+		}
+	}
+
+	onMount(() => { fetchModels(); loadGoogleStatus(); });
 </script>
 
 <div class="space-y-6">
@@ -297,26 +415,121 @@
 		</div>
 	</div>
 
-	<!-- ── Google Account (Phase 5) ───────────────────────────────────── -->
+	<!-- ── Google Account ────────────────────────────────────────────── -->
 	<div class="card bg-surface-50-950 border border-surface-200-800 rounded-xl overflow-hidden">
 		<div class="px-5 py-3.5 border-b border-surface-200-800 flex items-center gap-2">
 			<span>🔑</span>
 			<h3 class="font-semibold text-sm">Google Account</h3>
+			<button
+				onclick={loadGoogleStatus}
+				class="ml-auto text-xs px-2 py-1 rounded bg-surface-100-900 hover:bg-surface-200-800
+				text-surface-500-500 transition-colors"
+			>↻ Refresh</button>
 		</div>
-		<div class="p-5 flex flex-col sm:flex-row gap-3">
-			{#each [
-				{ label: 'Re-authorize', icon: '🔒', desc: 'Refresh OAuth token' },
-				{ label: 'Revoke Token', icon: '🚫', desc: 'Delete token.json' },
-				{ label: 'Token Status', icon: '✅', desc: 'Check expiry + access' },
-			] as action}
-				<div class="flex-1 flex items-center gap-3 px-4 py-3 rounded-xl border border-surface-200-800 bg-surface-100-900 opacity-50">
-					<span class="text-xl">{action.icon}</span>
-					<div>
-						<p class="font-semibold text-xs">{action.label}</p>
-						<p class="text-[10px] text-surface-400-600">{action.desc}</p>
-					</div>
+		<div class="p-5 space-y-4">
+
+			<!-- Token status row -->
+			<div class="flex items-center gap-3 px-4 py-3 rounded-xl border
+				{googleStatus === 'valid'   ? 'border-success-500/40 bg-success-500/5' :
+				 googleStatus === 'expired' ? 'border-warning-500/40 bg-warning-500/5' :
+				                             'border-surface-200-800 bg-surface-100-900/50'}">
+				<div class="w-2.5 h-2.5 rounded-full shrink-0
+					{googleStatus === 'valid'   ? 'bg-success-500' :
+					 googleStatus === 'expired' ? 'bg-warning-400' :
+					 googleStatus === 'missing' ? 'bg-error-400'   : 'bg-surface-400-600'}"></div>
+				<div class="flex-1">
+					<p class="text-xs font-semibold capitalize">
+						Token: {googleStatus === 'unknown' ? 'checking…' : googleStatus}
+					</p>
+					{#if googleExpiry}
+						<p class="text-[10px] text-surface-400-600 mt-0.5">Expiry: {googleExpiry}</p>
+					{/if}
 				</div>
-			{/each}
+			</div>
+
+			<!-- Pending auth banner -->
+			{#if googleFlowRunning && googleAuthUrl}
+				<div class="flex items-start gap-3 px-4 py-3 rounded-xl border border-primary-500/30 bg-primary-500/5">
+					<span class="text-lg mt-0.5">🌐</span>
+					<div class="flex-1 min-w-0">
+						<p class="text-xs font-semibold text-primary-400">Waiting for authorization…</p>
+						<p class="text-xs text-surface-400-600 mt-1">
+							Complete the sign-in in the browser tab. If it didn't open,
+							<a href={googleAuthUrl} target="_blank" rel="noopener noreferrer" class="text-primary-400 hover:underline">click here</a>.
+						</p>
+					</div>
+					<button
+						onclick={pollGoogleStatus}
+						class="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium bg-primary-500/20 text-primary-400
+						hover:bg-primary-500/30 transition-colors"
+					>Check again</button>
+				</div>
+			{/if}
+
+			<!-- Action buttons -->
+			<div class="flex flex-wrap gap-2">
+				<!-- Create / Re-authorize -->
+				<button
+					onclick={startGoogleAuth}
+					disabled={googleLoading || googleFlowRunning || !googleCredsExist}
+					class="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors
+					{googleStatus === 'valid'
+						? 'bg-primary-500/15 text-primary-400 hover:bg-primary-500/30'
+						: 'bg-primary-500/20 text-primary-400 hover:bg-primary-500/30 border border-primary-500/40'}
+					disabled:opacity-40 disabled:cursor-not-allowed"
+				>
+					{googleLoading ? '…' : googleFlowRunning ? '⏳ Waiting…' :
+					 googleStatus === 'valid' ? '🔑 Re-authorize' : '🔑 Create Token'}
+				</button>
+
+				<!-- Refresh (only when expired with refresh token) -->
+				{#if googleStatus === 'expired' && googleHasRefresh}
+					<button
+						onclick={refreshGoogleToken}
+						disabled={googleLoading}
+						class="px-3 py-1.5 rounded-lg text-xs font-medium bg-success-500/15 text-success-500
+						hover:bg-success-500/25 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+					>
+						{googleLoading ? '…' : '🔄 Refresh Token'}
+					</button>
+				{/if}
+
+				<!-- Token Status -->
+				<button
+					onclick={loadGoogleStatus}
+					class="px-3 py-1.5 rounded-lg text-xs font-medium bg-surface-100-900 hover:bg-surface-200-800
+					text-surface-500-500 transition-colors"
+				>
+					✅ Token Status
+				</button>
+
+				<!-- Revoke -->
+				{#if googleStatus !== 'missing'}
+					<button
+						onclick={revokeGoogleToken}
+						disabled={googleLoading}
+						class="px-3 py-1.5 rounded-lg text-xs font-medium bg-error-500/15 text-error-400
+						hover:bg-error-500/25 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+					>
+						{googleLoading ? '…' : '🚫 Revoke Token'}
+					</button>
+				{/if}
+			</div>
+
+			{#if !googleCredsExist}
+				<p class="text-xs text-warning-400">
+					⚠️ <span class="font-mono">creds/client_google_api_calendar.json</span> not found —
+					place your Google OAuth credentials file there first.
+				</p>
+			{/if}
+
+			{#if googleMsg}
+				<div class="text-xs px-3 py-2 rounded-lg
+					{googleMsg.ok ? 'bg-success-500/10 text-success-500' : 'bg-error-500/10 text-error-400'}">
+					{googleMsg.text}
+				</div>
+			{/if}
+
 		</div>
 	</div>
 

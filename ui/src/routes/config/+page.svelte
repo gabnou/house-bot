@@ -12,8 +12,7 @@
 			label: 'WhatsApp',
 			icon: '📱',
 			keys: [
-				{ key: 'PARTNER_LID',  hint: 'Comma-separated LID JIDs' },
-				{ key: 'PARTNER_NET',  hint: 'Comma-separated NET JIDs (optional)' },
+				{ key: 'PARTNER_LID',  hint: 'Format: jid:name,jid:name (e.g. 93119253@lid:Alice)' },
 			],
 		},
 		{

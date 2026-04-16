@@ -3,10 +3,12 @@ import re
 import signal
 import logging
 import subprocess
+import threading
+import wsgiref.simple_server
 from collections import deque
 from pathlib import Path
 from fastapi import APIRouter, Query, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -51,6 +53,47 @@ def _env_set(key: str, value: str) -> None:
     else:
         content = content.rstrip("\n") + f"\n{new_line}\n"
     _ENV_FILE.write_text(content, encoding="utf-8")
+
+
+# ── Google OAuth ─────────────────────────────────────────────────────────────
+
+_CREDS_PATH = _PROJECT_ROOT / "creds" / "client_google_api_calendar.json"
+_TOKEN_PATH = _PROJECT_ROOT / "creds" / "token.json"
+_GOOGLE_SCOPES = ["https://www.googleapis.com/auth/calendar"]
+_GOOGLE_CALLBACK_PORT = 8787
+
+# Mutable state for the in-flight OAuth flow (single-process, single-flow)
+_google_oauth: dict = {"running": False, "error": None}
+
+
+def _google_token_status() -> dict:
+    """Return a dict describing the current token.json state.
+
+    If the access token is expired but a refresh_token is present, auto-refresh
+    and persist the new token — matching the behaviour of the calendar service
+    itself (which refreshes transparently on first API call).
+    """
+    if not _TOKEN_PATH.exists():
+        return {"status": "missing"}
+    try:
+        from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request
+        creds = Credentials.from_authorized_user_file(str(_TOKEN_PATH), _GOOGLE_SCOPES)
+        expiry = creds.expiry.isoformat() if creds.expiry else None
+        if creds.valid:
+            return {"status": "valid", "expiry": expiry}
+        if creds.expired and creds.refresh_token:
+            # Silently refresh — same path as calendar_handler.get_service()
+            creds.refresh(Request())
+            _TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
+            expiry = creds.expiry.isoformat() if creds.expiry else None
+            logger.debug("🔄 Google token auto-refreshed on status check")
+            return {"status": "valid", "expiry": expiry}
+        if creds.expired:
+            return {"status": "expired", "expiry": expiry, "has_refresh": False}
+        return {"status": "invalid", "expiry": expiry}
+    except Exception as exc:
+        return {"status": "invalid", "error": str(exc)}
 
 
 @router.get("/ping")
@@ -462,3 +505,493 @@ async def reset_prompt(skill: str):
         logger.info("↩️  Prompt reset to default: %s", skill)
         return JSONResponse(content={"ok": True, "skill": skill, "is_override": False})
     return JSONResponse(content={"ok": True, "skill": skill, "is_override": False, "note": "already default"})
+
+
+# ── Installation Wizard ──────────────────────────────────────────────────────
+
+class PullModelRequest(BaseModel):
+    model: str
+
+
+class ChatTestRequest(BaseModel):
+    model: str
+    message: str
+
+
+@router.post("/install/ollama/pull")
+async def install_ollama_pull(req: PullModelRequest):
+    """
+    Stream ollama model pull progress as Server-Sent Events.
+    Each event is a raw JSON line from Ollama's /api/pull response.
+    A final {"done": true} event signals completion.
+    """
+    import json as _json
+    import requests as _req
+
+    model = req.model.strip()
+    if not model:
+        raise HTTPException(status_code=400, detail="model is required")
+
+    base = _ollama_base()
+
+    def _stream():
+        try:
+            with _req.post(
+                f"{base}/api/pull",
+                json={"model": model},
+                stream=True,
+                timeout=3600,
+            ) as r:
+                for raw in r.iter_lines():
+                    if raw:
+                        yield f"data: {raw.decode('utf-8')}\n\n"
+        except Exception as exc:
+            yield f"data: {_json.dumps({'error': str(exc)})}\n\n"
+        yield 'data: {"done":true}\n\n'
+
+    return StreamingResponse(
+        _stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.post("/install/ollama/chat")
+async def install_ollama_chat(req: ChatTestRequest):
+    """
+    Stream a chat prompt to Ollama as Server-Sent Events.
+    Each event carries a JSON token: {"token": "..."}.
+    A final {"done": true} event signals the end of the response.
+    """
+    import json as _json
+    import requests as _req
+
+    model = req.model.strip()
+    message = req.message.strip()
+    if not model or not message:
+        raise HTTPException(status_code=400, detail="model and message are required")
+
+    base = _ollama_base()
+
+    def _stream():
+        # Yield an SSE comment immediately so the proxy/browser knows the
+        # connection is alive even while Ollama is loading the model (~10s).
+        yield ': connected\n\n'
+        try:
+            with _req.post(
+                f"{base}/api/generate",
+                json={"model": model, "prompt": message, "stream": True},
+                stream=True,
+                timeout=120,
+            ) as r:
+                for raw in r.iter_lines():
+                    if not raw:
+                        continue
+                    try:
+                        chunk = _json.loads(raw.decode("utf-8"))
+                        token = chunk.get("response", "")
+                        if token:
+                            yield f"data: {_json.dumps({'token': token})}\n\n"
+                        if chunk.get("done"):
+                            break
+                    except Exception:
+                        pass
+        except Exception as exc:
+            yield f"data: {_json.dumps({'error': str(exc)})}\n\n"
+        yield 'data: {"done":true}\n\n'
+
+    return StreamingResponse(
+        _stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ── Keep-alive setting ───────────────────────────────────────────────────────
+
+@router.get("/install/system-info")
+async def install_system_info():
+    """Return system RAM in GB (macOS only via sysctl)."""
+    try:
+        raw = subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True).strip()
+        ram_gb = int(raw) // (1024 ** 3)
+    except Exception:
+        ram_gb = None
+    return JSONResponse(content={"ram_gb": ram_gb})
+
+
+@router.get("/install/ollama/keep-alive")
+async def get_keep_alive():
+    """Return the current OLLAMA_KEEP_ALIVE value from .env (or OS env)."""
+    value = os.getenv("OLLAMA_KEEP_ALIVE", "")
+    return JSONResponse(content={"value": value})
+
+
+class KeepAliveRequest(BaseModel):
+    value: str
+
+
+@router.post("/install/ollama/keep-alive")
+async def set_keep_alive(req: KeepAliveRequest):
+    """Write OLLAMA_KEEP_ALIVE to .env."""
+    value = req.value.strip()
+    _env_set("OLLAMA_KEEP_ALIVE", value)
+    os.environ["OLLAMA_KEEP_ALIVE"] = value
+    logger.info("⏱️  OLLAMA_KEEP_ALIVE set to %s", value)
+    return JSONResponse(content={"ok": True, "value": value})
+
+
+# ── WhatsApp App Name ────────────────────────────────────────────────────────
+
+class WaAppNameRequest(BaseModel):
+    value: str
+
+
+@router.get("/install/wa-app-name")
+async def get_wa_app_name():
+    """Return the current WHATSAPP_APPNAME from env."""
+    return JSONResponse(content={"value": os.getenv("WHATSAPP_APPNAME", "HouseBot")})
+
+
+@router.post("/install/wa-app-name")
+async def set_wa_app_name(req: WaAppNameRequest):
+    """Write WHATSAPP_APPNAME to .env (max 20 chars)."""
+    name = req.value.strip()[:20] or "HouseBot"
+    _env_set("WHATSAPP_APPNAME", name)
+    os.environ["WHATSAPP_APPNAME"] = name
+    logger.info("📱 WHATSAPP_APPNAME set to %s", name)
+    return JSONResponse(content={"ok": True, "value": name})
+
+
+# ── WhatsApp QR Proxy ───────────────────────────────────────────────────────
+
+@router.get("/install/whatsapp/qr")
+async def install_whatsapp_qr():
+    """
+    Proxy the /qr endpoint on the WhatsApp bridge (port 3001).
+    Returns:
+      {"connected": true}                          – already paired
+      {"connected": false, "qr": "data:image/png;base64,..."}  – QR available
+      503 – bridge unreachable or QR not yet generated
+    """
+    import requests as _req
+    try:
+        r = _req.get("http://localhost:3001/qr", timeout=5)
+        return JSONResponse(content=r.json(), status_code=r.status_code)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Bridge unreachable: {exc}")
+
+
+# ── Google OAuth endpoints ────────────────────────────────────────────────────
+
+@router.get("/install/google-auth/status")
+@router.get("/google-auth/status")
+async def google_auth_status():
+    """Return the current Google OAuth token status."""
+    info = _google_token_status()
+    info["credentials_exist"] = _CREDS_PATH.exists()
+    info["flow_running"] = _google_oauth["running"]
+    if _google_oauth["error"]:
+        info["flow_error"] = _google_oauth["error"]
+    return JSONResponse(content=info)
+
+
+@router.post("/install/google-auth")
+@router.post("/google-auth")
+async def google_auth_start():
+    """
+    Start the Google OAuth flow.
+    Spins up a temporary HTTP server on port 8787 in a background thread,
+    returns the authorization URL for the user to open in a browser.
+    Google redirects back to http://localhost:8787/ after authorization.
+    """
+    if not _CREDS_PATH.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="creds/client_google_api_calendar.json not found — upload your Google OAuth credentials first.",
+        )
+
+    if _google_oauth["running"]:
+        return JSONResponse(
+            content={"ok": False, "detail": "An OAuth flow is already in progress."},
+            status_code=409,
+        )
+
+    # Allow HTTP for the local loopback redirect URI.
+    # This is safe — traffic never leaves localhost.
+    os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
+
+    from google_auth_oauthlib.flow import Flow
+
+    redirect_uri = f"http://localhost:{_GOOGLE_CALLBACK_PORT}/"
+    flow = Flow.from_client_secrets_file(
+        str(_CREDS_PATH),
+        scopes=_GOOGLE_SCOPES,
+        redirect_uri=redirect_uri,
+    )
+    auth_url, _ = flow.authorization_url(access_type="offline", prompt="consent")
+
+    _google_oauth["running"] = True
+    _google_oauth["error"] = None
+
+    def _serve_callback() -> None:
+        class _SilentHandler(wsgiref.simple_server.WSGIRequestHandler):
+            def log_message(self, *args):  # suppress request logs
+                pass
+
+        def _wsgi_app(environ, start_response):
+            qs = environ.get("QUERY_STRING", "")
+            path = environ.get("PATH_INFO", "/")
+            auth_response = f"http://localhost:{_GOOGLE_CALLBACK_PORT}{path}{'?' + qs if qs else ''}"
+            start_response("200 OK", [("Content-Type", "text/html; charset=utf-8")])
+            try:
+                os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
+                flow.fetch_token(authorization_response=auth_response)
+                _TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
+                _TOKEN_PATH.write_text(flow.credentials.to_json(), encoding="utf-8")
+                logger.info("✅ Google OAuth token saved to %s", _TOKEN_PATH)
+                body = (
+                    b"<html><head><title>HouseBot</title></head><body>"
+                    b"<script>window.close();</script>"
+                    b"<p style='font-family:sans-serif;padding:2rem'>Authorization successful! "
+                    b"You can close this tab.</p></body></html>"
+                )
+            except Exception as exc:
+                logger.error("Google OAuth callback error: %s", exc)
+                _google_oauth["error"] = str(exc)
+                body = (
+                    f"<html><body><p>Error: {exc}</p></body></html>"
+                ).encode("utf-8")
+            return [body]
+
+        try:
+            server = wsgiref.simple_server.make_server(
+                "127.0.0.1", _GOOGLE_CALLBACK_PORT, _wsgi_app, handler_class=_SilentHandler
+            )
+            server.timeout = 300  # 5-minute window for the user to complete auth
+            server.handle_request()
+        except Exception as exc:
+            logger.error("Google OAuth local server error: %s", exc)
+            _google_oauth["error"] = str(exc)
+        finally:
+            _google_oauth["running"] = False
+
+    threading.Thread(target=_serve_callback, daemon=True).start()
+
+    return JSONResponse(content={"ok": True, "auth_url": auth_url})
+
+
+@router.post("/install/google-auth/refresh")
+@router.post("/google-auth/refresh")
+async def google_auth_refresh():
+    """Refresh an expired Google OAuth token using the stored refresh_token."""
+    if not _TOKEN_PATH.exists():
+        raise HTTPException(status_code=404, detail="No token.json found — authorize first.")
+    try:
+        from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request
+        creds = Credentials.from_authorized_user_file(str(_TOKEN_PATH), _GOOGLE_SCOPES)
+        if not creds.refresh_token:
+            raise HTTPException(
+                status_code=400,
+                detail="No refresh token stored — run full re-authorization.",
+            )
+        creds.refresh(Request())
+        _TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
+        logger.info("🔄 Google OAuth token refreshed")
+        return JSONResponse(content={"ok": True, "status": "valid"})
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.delete("/install/google-auth")
+@router.delete("/google-auth")
+async def google_auth_revoke():
+    """Delete the stored Google OAuth token (requires re-authorization afterwards)."""
+    if _TOKEN_PATH.exists():
+        _TOKEN_PATH.unlink()
+        logger.info("🗑️  Google token revoked (token.json deleted)")
+    return JSONResponse(content={"ok": True, "status": "missing"})
+
+
+# ── Sender Restrictions (Install Wizard) ─────────────────────────────────────
+
+class AuthorizeSenderRequest(BaseModel):
+    jid: str
+    name: str = ""
+
+
+def _parse_partner_entries(raw: str) -> list[dict]:
+    """Parse 'jid:name,...' or plain 'jid,...' into [{jid, name}, ...]."""
+    result = []
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if ":" in entry:
+            jid, _, name = entry.partition(":")
+            result.append({"jid": jid.strip(), "name": name.strip()})
+        else:
+            result.append({"jid": entry, "name": ""})
+    return result
+
+
+def _partners_list() -> list[dict]:
+    """Return [{jid, name}, ...] parsed from PARTNER_LID (jid:name format)."""
+    return _parse_partner_entries(os.getenv("PARTNER_LID", ""))
+
+
+@router.get("/install/sender-restrictions")
+async def get_sender_restrictions():
+    """Return the current list of authorized senders (PARTNER_LID + PARTNER_NAMES)."""
+    return JSONResponse(content={"partners": _partners_list()})
+
+
+@router.post("/install/sender-restrictions/scan")
+async def scan_sender_restrictions():
+    """
+    Parse bridge.log for recent unauthorized sender JIDs.
+    Looks for '🚫 Message ignored from: <JID>' lines emitted by the bridge
+    whenever a message arrives from a number not in PARTNER_LID.
+    Returns a de-duplicated list of detected senders with their phone number.
+    """
+    log_path = _KNOWN_LOGS["bridge"]
+    if not log_path.exists():
+        return JSONResponse(content={"senders": [], "note": "bridge.log not found"})
+
+    authorized = {e["jid"] for e in _parse_partner_entries(os.getenv("PARTNER_LID", ""))}
+
+    tail: deque[str] = deque(maxlen=500)
+    try:
+        with log_path.open("r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                tail.append(line.rstrip("\n"))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not read bridge.log: {e}")
+
+    ignored_pattern = re.compile(r"Message ignored from: (\S+@\S+)(?: \(name: (.+?)\))?")  
+
+    seen: dict[str, dict] = {}
+    for line in tail:
+        m = ignored_pattern.search(line)
+        if m:
+            jid  = m.group(1)
+            name = (m.group(2) or "").strip()
+            if name == "unknown":
+                name = ""
+            if jid not in seen:
+                jid_type = jid.split("@")[1] if "@" in jid else ""
+                seen[jid] = {
+                    "jid": jid,
+                    "type": jid_type,
+                    "name": name,
+                    "already_authorized": jid in authorized,
+                }
+
+    return JSONResponse(content={"senders": list(seen.values())})
+
+
+@router.post("/install/sender-restrictions/authorize")
+async def authorize_sender(req: AuthorizeSenderRequest):
+    """Append a jid:name entry to PARTNER_LID in .env."""
+    jid  = req.jid.strip()
+    # Sanitize name: colons and commas would break the format
+    name = req.name.strip().replace(":", "-").replace(",", " ")
+    if not jid or "@" not in jid:
+        raise HTTPException(status_code=400, detail="Invalid JID — expected <number>@<domain>")
+
+    current_entries = _parse_partner_entries(os.getenv("PARTNER_LID", ""))
+    if any(e["jid"] == jid for e in current_entries):
+        return JSONResponse(content={"ok": True, "partners": _partners_list(), "note": "already authorized"})
+
+    current_entries.append({"jid": jid, "name": name})
+    new_value = ",".join(
+        f"{e['jid']}:{e['name']}" if e["name"] else e["jid"]
+        for e in current_entries
+    )
+    _env_set("PARTNER_LID", new_value)
+    os.environ["PARTNER_LID"] = new_value
+
+    logger.info("✅ Sender authorized: %s (%s)", jid, name or "no name")
+    return JSONResponse(content={"ok": True, "partners": _partners_list()})
+
+
+# ── Location & Briefing Settings (Install Wizard) ────────────────────────────
+
+_BRIEFING_LANGUAGES = [
+    "English", "Spanish", "Italian", "French", "German",
+    "Portuguese", "Dutch", "Polish", "Russian", "Japanese",
+    "Chinese", "Arabic", "Turkish", "Korean", "Swedish",
+]
+
+_TIMEZONES = [
+    "Africa/Abidjan", "Africa/Cairo", "Africa/Johannesburg", "Africa/Lagos",
+    "America/Argentina/Buenos_Aires", "America/Bogota", "America/Chicago",
+    "America/Denver", "America/Los_Angeles", "America/Mexico_City",
+    "America/New_York", "America/Sao_Paulo", "America/Toronto",
+    "Asia/Bangkok", "Asia/Dubai", "Asia/Hong_Kong", "Asia/Kolkata",
+    "Asia/Jakarta", "Asia/Seoul", "Asia/Shanghai", "Asia/Singapore",
+    "Asia/Tokyo", "Australia/Melbourne", "Australia/Sydney",
+    "Europe/Amsterdam", "Europe/Athens", "Europe/Berlin", "Europe/Brussels",
+    "Europe/Bucharest", "Europe/Copenhagen", "Europe/Dublin",
+    "Europe/Helsinki", "Europe/Istanbul", "Europe/Lisbon", "Europe/London",
+    "Europe/Madrid", "Europe/Moscow", "Europe/Oslo", "Europe/Paris",
+    "Europe/Prague", "Europe/Rome", "Europe/Stockholm", "Europe/Vienna",
+    "Europe/Warsaw", "Europe/Zurich", "Pacific/Auckland", "Pacific/Honolulu",
+    "UTC",
+]
+
+
+class LocationSettingsRequest(BaseModel):
+    city: str
+    latitude: float
+    longitude: float
+    timezone: str
+    briefing_language: str
+
+
+@router.get("/install/location")
+async def get_location_settings():
+    """Return current location and briefing settings from env."""
+    return JSONResponse(content={
+        "city":              os.getenv("DEFAULT_CITY", ""),
+        "latitude":          os.getenv("DEFAULT_LATITUDE", ""),
+        "longitude":         os.getenv("DEFAULT_LONGITUDE", ""),
+        "timezone":          os.getenv("TIMEZONE_DEFAULT", ""),
+        "briefing_language": os.getenv("BRIEFING_LANGUAGE", "English"),
+        "briefing_languages": _BRIEFING_LANGUAGES,
+        "timezones":         _TIMEZONES,
+    })
+
+
+@router.post("/install/location")
+async def save_location_settings(req: LocationSettingsRequest):
+    """Persist location and briefing settings to .env."""
+    city = req.city.strip()
+    timezone = req.timezone.strip()
+    lang = req.briefing_language.strip()
+
+    if not city:
+        raise HTTPException(status_code=400, detail="City name is required")
+    if not (-90 <= req.latitude <= 90):
+        raise HTTPException(status_code=400, detail="Latitude must be between -90 and 90")
+    if not (-180 <= req.longitude <= 180):
+        raise HTTPException(status_code=400, detail="Longitude must be between -180 and 180")
+
+    _env_set("DEFAULT_CITY",      city)
+    _env_set("DEFAULT_LATITUDE",  str(round(req.latitude,  6)))
+    _env_set("DEFAULT_LONGITUDE", str(round(req.longitude, 6)))
+    _env_set("TIMEZONE_DEFAULT",  timezone)
+    _env_set("BRIEFING_LANGUAGE", lang)
+
+    os.environ["DEFAULT_CITY"]      = city
+    os.environ["DEFAULT_LATITUDE"]  = str(round(req.latitude,  6))
+    os.environ["DEFAULT_LONGITUDE"] = str(round(req.longitude, 6))
+    os.environ["TIMEZONE_DEFAULT"]  = timezone
+    os.environ["BRIEFING_LANGUAGE"] = lang
+
+    logger.info("✅ Location settings saved: %s (%.4f, %.4f) tz=%s lang=%s",
+                city, req.latitude, req.longitude, timezone, lang)
+    return JSONResponse(content={"ok": True})

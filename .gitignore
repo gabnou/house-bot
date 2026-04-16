@@ -1,3 +1,5 @@
+.DS_Store
+**/.DS_Store
 .env
 creds/
 bridge/baileys_auth/
