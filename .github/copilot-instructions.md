@@ -121,6 +121,13 @@ Each skill file does three things:
 - Each registers its domain tools and its LLM prompt builder
 - LLM prompts live here (not in `intent_parser.py`) so domains are fully isolated
 
+#### `bot/skills/schemas.py`
+- `ToolInput` — base Pydantic class for skill input schemas (extend per tool)
+- `ToolOutput` — base Pydantic class: `{ok: bool, message: str|None, data: dict|None}`
+
+#### `bot/skills/utils.py`
+- `format_tool_reply(result)` — normalises any tool return value (str / dict / None) to a plain string for the reply
+
 ### `services/` — Business Logic Layer
 
 Pure Python modules with no awareness of HTTP, skills, or the registry.
@@ -163,6 +170,16 @@ All endpoints are under `/admin/api/` and registered on the FastAPI app in `bot/
 - `GET  /admin/api/prompts/{skill}` — get prompt text (override file or built-in)
 - `PUT  /admin/api/prompts/{skill}` — write override file to `bot/prompts/{skill}.txt`
 - `DELETE /admin/api/prompts/{skill}` — delete override file (revert to built-in)
+- `GET  /admin/api/google-auth/status` — token status (auto-refreshes if expired + has refresh_token)
+- `POST /admin/api/google-auth` — start OAuth flow: spins a wsgiref server on :8787, returns `auth_url`
+- `POST /admin/api/google-auth/refresh` — force-refresh token via stored refresh_token
+- `DELETE /admin/api/google-auth` — revoke token (delete token.json)
+- All four Google OAuth routes are also available under `/admin/api/install/google-auth/*` (install wizard alias)
+- `POST /admin/api/install/ollama/pull` — SSE stream of Ollama model pull progress
+- `POST /admin/api/install/ollama/chat` — SSE stream of a single Ollama chat turn (model test)
+- `GET  /admin/api/install/system-info` — system RAM in GB (macOS `sysctl`)
+- `GET  /admin/api/install/ollama/keep-alive` — read `OLLAMA_KEEP_ALIVE` from env
+- `POST /admin/api/install/ollama/keep-alive` — write `OLLAMA_KEEP_ALIVE` to `.env`
 
 ### `ui/` — Control Panel (SvelteKit)
 - **Framework**: SvelteKit v2 + Svelte 5 runes mode (`$state`, `$effect`, `$derived`, `$props`, `{@render}`). Never use `$:` reactive statements — runes mode only.
@@ -175,10 +192,10 @@ All endpoints are under `/admin/api/` and registered on the FastAPI app in `bot/
 - **Pages**:
   - `/` — home: logo, quick-link grid, dark/light toggle, CTA to install wizard
   - `/status` — live health cards (FastAPI/Ollama/Bridge), config table, log viewer with per-service tabs and 4s auto-refresh
-  - `/admin` — service control (per-service Restart/Stop/Start + bulk actions) + model manager (real model list, switch button)
+  - `/admin` — service control (per-service Restart/Stop/Start + bulk actions) + model manager (real model list, switch button) + Google Account (Create Token, Re-authorize, Refresh Token, Token Status, Revoke Token)
   - `/prompts` — live prompt editor per skill (load/save/reset, `customised` badge when override file exists)
   - `/config` — grouped `.env` editor (placeholder)
-  - `/install` — installation wizard (placeholder, shows Skip button with inline confirmation)
+  - `/install` — installation wizard; Step 1 (Ollama) and Step 2 (Google OAuth) are interactive accordions; Steps 3–6 are static placeholders
 - **Layout** (`ui/src/routes/+layout.svelte`): sidebar (60-wide, nav items, dark toggle in footer), topbar hidden on `/`, main content area with git badge footer
 - All API calls use `fetch('/admin/api/...')` — never absolute URLs
 
@@ -228,7 +245,7 @@ HouseBot intentionally avoids a reasoning loop (ReAct / tool-chaining). One mess
 All config is in `.env` (see `.env.example`). Key variables:
 - `OLLAMA_URL`, `OLLAMA_MODEL` — LLM endpoint and model
 - `LOG_LEVEL` — DEBUG/INFO/WARNING/ERROR (propagated to uvicorn and all app loggers)
-- `PARTNER_LID`, `PARTNER_NET` — WhatsApp partner JIDs
+- `PARTNER_LID` — comma-separated `jid:name` entries (e.g. `93119@lid:Alice,12345@lid:Bob`); **the only JID list read by both `main.py` and `bridge/index.js`**. Name is optional; both consumer strip everything after `:` to obtain the bare JID.
 - `GOOGLE_CALENDAR_NAME` — calendar to use
 - `DEFAULT_CITY`, `DEFAULT_LATITUDE`, `DEFAULT_LONGITUDE` — weather defaults
 - `WHISPER_MODEL` — faster-whisper model size (small/medium/large)
@@ -237,7 +254,7 @@ All config is in `.env` (see `.env.example`). Key variables:
 - `TIMEZONE_DEFAULT` — timezone for weather/calendar
 
 ## Conventions
-- Python code uses `logging.getLogger(__name__)` — levels set explicitly per module in `main.py`
+- Python code uses `logging.getLogger(__name__)` — log level is re-applied in the FastAPI lifespan event (not just at import time) because uvicorn calls `logging.config.dictConfig()` after importing `main.py`, which resets the root logger
 - LLM prompts live in `skills/<domain>.py` as the `prompt()` function registered via `register_prompt()`; override files in `bot/prompts/{skill}.txt` take priority at runtime
 - JSON is the only LLM response format — never markdown, never plain text
 - Fuzzy matching uses `difflib.SequenceMatcher` with threshold 0.82
@@ -246,12 +263,15 @@ All config is in `.env` (see `.env.example`). Key variables:
 - Svelte 5 runes mode: use `$state()`, `$effect()`, `$derived()`, `$props()` — never `$:` reactive statements
 - Skeleton UI CSS must be imported with relative `../node_modules/...` paths in `app.css`
 - No external cloud services except: Open-Meteo (free), Google Calendar API, WhatsApp (Meta)
+- **StaticFiles mount order is critical**: `app.mount("/", StaticFiles(...))` must be the very last line in `bot/main.py`. Starlette resolves routes in registration order — mounting at `/` before route decorators causes `StaticFiles` to intercept all requests (POST included) and return 405.
+- **Google OAuth local callback**: the flow runs a `wsgiref.simple_server` on port 8787 in a daemon thread. `OAUTHLIB_INSECURE_TRANSPORT=1` must be set because the redirect URI is `http://` (localhost only — safe). Token is saved to `creds/token.json`. The status endpoint auto-refreshes an expired token if a `refresh_token` is present, matching `calendar_handler.get_service()` behaviour.
 
 ## Copilot Agent Behaviours
-- Always let the user reqrite files or fix typos if you are not able to do it. Don't create external scripts to write files, just ask the user to do it.
-- If you need to write code, write it in the correct file and in the correct place, don't write it in a separate file and then ask the user to move it.
-- If you need to change code in a file, write the full file content with the changes included, don't write only the changed lines or a diff.
-- If you need to add a new file, write the full file content and the file path, don't write only the file content or only the file path.
+- Write code directly in the correct file and location — never create a temporary file and ask the user to move it.
+- When editing a file, use the editor tools to make precise changes — do not reproduce the entire file unless asked.
+- If a file cannot be edited via tools, ask the user to do it — do not create external scripts as a workaround.
+- Always find simple solutions that do not require new dependencies or complex refactors. If a change is needed across multiple files explain it clearly and seek for approvals before proceeding.
+- Before answering any prompt, always check the grammar and spelling of my input. If you find errors, provide a brief 'Proofread' section at the beginning of your response with the corrected text.
 
 
 

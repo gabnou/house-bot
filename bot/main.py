@@ -18,9 +18,6 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
     force=True,
 )
-# Explicitly set the level on all app loggers so uvicorn cannot override it
-for _name in ("__main__", "main", "intent_parser", "shopping_db", "weather", "calendar_handler", "scheduler"):
-    logging.getLogger(_name).setLevel(_log_level)
 logger = logging.getLogger(__name__)
 
 # Third-party and local imports
@@ -33,11 +30,11 @@ from services.shopping_db import init_db
 from intent_parser import parse_intent, detect_category, validate_transcription, detect_language, translate_to_english, translate_from_english, classify_intent_category
 from admin.router import router as admin_router
 
-# List of partner JIDs from env
+# List of partner JIDs from env (format: jid:name,jid:name or plain jid,jid)
 PARTNER = [
-    jid.strip()
-    for jid in os.getenv("PARTNER_LID", "").split(",")
-    if jid.strip()
+    entry.split(":")[0].strip()
+    for entry in os.getenv("PARTNER_LID", "").split(",")
+    if entry.strip()
 ]
 
 # Regex patterns for intent detection
@@ -86,6 +83,14 @@ _whisper_model: WhisperModel | None = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _whisper_model
+    # uvicorn calls logging.config.dictConfig() after importing main.py, which
+    # resets the root logger level and overrides our basicConfig. Re-apply here,
+    # after uvicorn's logging setup is complete.
+    logging.getLogger().setLevel(_log_level)
+    for _lgr_name, _lgr in logging.root.manager.loggerDict.items():
+        if isinstance(_lgr, logging.Logger) and not _lgr_name.startswith(("uvicorn", "websockets", "watchfiles")):
+            _lgr.setLevel(_log_level)
+    logger.debug("🪵 Log level applied: %s", logging.getLevelName(_log_level))
     init_db()
     model_name = os.getenv("WHISPER_MODEL", "small")
     logger.info("🎤 Loading Whisper model '%s'...", model_name)
@@ -98,12 +103,6 @@ app = FastAPI(lifespan=lifespan)
 
 # Admin API router
 app.include_router(admin_router)
-
-# Serve the SvelteKit production build (ui/build/) if it exists
-_UI_BUILD = Path(__file__).parent.parent / "ui" / "build"
-if _UI_BUILD.exists():
-    app.mount("/", StaticFiles(directory=str(_UI_BUILD), html=True), name="ui")
-    logger.info("🖥️  Admin UI served from %s", _UI_BUILD)
 
 # Request models
 class Message(BaseModel):
@@ -272,3 +271,11 @@ async def handle_message(msg: Message):
             reply = translated_reply
 
     return {"reply": reply, "notification": notification}
+
+# Serve the SvelteKit production build (ui/build/) if it exists.
+# MUST be mounted LAST — StaticFiles at "/" would intercept all routes
+# registered after it, returning 405 for POST endpoints.
+_UI_BUILD = Path(__file__).parent.parent / "ui" / "build"
+if _UI_BUILD.exists():
+    app.mount("/", StaticFiles(directory=str(_UI_BUILD), html=True), name="ui")
+    logger.info("🖥️  Admin UI served from %s", _UI_BUILD)

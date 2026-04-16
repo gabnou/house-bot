@@ -69,7 +69,7 @@
 	<Navigation.Root layout="sidebar" class="flex flex-col w-60 shrink-0 border-r border-surface-200-800">
 		<Navigation.Header class="flex items-center gap-3 px-5 py-5 border-b border-surface-200-800">
 			<a href="/" class="flex items-center gap-3">
-				<img src="/housebot_icon.svg" alt="HouseBot" class="w-8 h-8 shrink-0" />
+				<img src="/housebot_icon.png" alt="HouseBot" class="w-8 h-8 shrink-0" />
 				<div>
 					<p class="font-bold text-base leading-tight">HouseBot</p>
 					<p class="text-xs text-surface-400-600">Control Panel</p>
