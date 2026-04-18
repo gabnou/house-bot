@@ -10,7 +10,7 @@ Browser-based control panel for HouseBot. Built with SvelteKit + Skeleton UI (ce
 | UI library | Skeleton UI v4 (cerberus theme) |
 | CSS | Tailwind v4 |
 | Build adapter | `adapter-static` → `build/` |
-| Dev server | Vite — `127.0.0.1:5252` |
+| Dev server | Vite — `localhost:5252` |
 
 ## Pages
 
@@ -20,8 +20,7 @@ Browser-based control panel for HouseBot. Built with SvelteKit + Skeleton UI (ce
 | `/status` | live | Health cards, config table, log viewer (4s auto-refresh) |
 | `/admin` | live | Service control + Ollama model manager |
 | `/prompts` | live | Per-skill LLM prompt editor (save / reset) |
-| `/config` | placeholder | `.env` editor |
-| `/install` | placeholder | Setup wizard |
+| `/install` | live | Configuration wizard |
 
 ## Production build
 
@@ -41,7 +40,7 @@ Rebuild whenever you pull UI source changes.
 ./housebot.sh ui-dev
 ```
 
-Starts the Vite dev server at **http://127.0.0.1:5252** with HMR. API calls to `/admin/api/*` are proxied to the FastAPI bot at `:8000`, so the bot must be running alongside.
+Starts the Vite dev server at **http://localhost:5252** with HMR. API calls to `/admin/api/*` are proxied to the FastAPI bot at `:8000`, so the bot must be running alongside.
 
 ## Notes
 
