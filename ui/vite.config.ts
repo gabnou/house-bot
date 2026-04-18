@@ -25,7 +25,7 @@ export default defineConfig({
 	},
 	server: {
 		port: 5252,
-		host: '127.0.0.1',
+		host: 'localhost',
 		proxy: {
 			'/admin/api': {
 				target: 'http://localhost:8000',

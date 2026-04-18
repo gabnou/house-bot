@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 # Third-party and local imports
 from fastapi import FastAPI, UploadFile, File
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 from faster_whisper import WhisperModel
@@ -277,5 +278,23 @@ async def handle_message(msg: Message):
 # registered after it, returning 405 for POST endpoints.
 _UI_BUILD = Path(__file__).parent.parent / "ui" / "build"
 if _UI_BUILD.exists():
-    app.mount("/", StaticFiles(directory=str(_UI_BUILD), html=True), name="ui")
+    class _SPAStaticFiles(StaticFiles):
+        """
+        StaticFiles subclass that serves index.html for any path that does not
+        match a real file — enabling SvelteKit client-side routing on direct
+        navigation (e.g. /install, /admin).
+
+        Static assets (/_app/*, *.js, *.css …) are served normally because
+        they exist as real files in ui/build/.  Only unknown paths fall through
+        to index.html, so API GET endpoints are never affected.
+        """
+        async def get_response(self, path: str, scope):
+            try:
+                return await super().get_response(path, scope)
+            except StarletteHTTPException as exc:
+                if exc.status_code == 404:
+                    return await super().get_response("index.html", scope)
+                raise
+
+    app.mount("/", _SPAStaticFiles(directory=str(_UI_BUILD), html=True), name="ui")
     logger.info("🖥️  Admin UI served from %s", _UI_BUILD)

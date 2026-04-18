@@ -202,7 +202,9 @@ All settings are saved directly to `.env` and take effect immediately (a bridge 
 | Speech-to-text | faster-whisper | (in-process) |
 | Control Panel | SvelteKit + Skeleton UI + Tailwind v4 | served at :8000/ |
 
-The Control Panel production build (`ui/build/`) is served statically by FastAPI. No separate server is needed in production — everything is on port **8000** and proxied through the bot.
+The Control Panel production build (`ui/build/`) is served as static files by FastAPI. No separate server is needed — everything runs on port **8000**.
+
+> **`ui/build/` is not committed to git.** It is created by `install.sh` on first installation and must be rebuilt manually after pulling UI source changes (see [Pulling updates](#pulling-updates) below).
 
 ### Make the script executable (first time only)
 
@@ -221,29 +223,8 @@ chmod +x housebot.sh
 ./housebot.sh logs-live    # follow all process logs in real time
 ./housebot.sh logs-rotate  # manually rotate logs (also runs automatically on start)
 ./housebot.sh qr           # follow bridge log in real time (for QR code on first run)
-./housebot.sh ui-build     # rebuild the control panel UI (run after pulling UI changes)
-./housebot.sh ui-dev       # start Vite dev server on :5252 (UI development only)
-```
-
-> **UI development:** `./housebot.sh ui-dev` starts the Vite dev server at **http://localhost:5252** with HMR — for UI development only. It proxies `/admin/api/*` to the FastAPI server at `:8000`, so the bot must be running alongside. In production, always use **http://localhost:8000**.
-
-### UI development
-
-When working on the Control Panel source files (`ui/src/`), use the Vite dev server for instant feedback via HMR:
-
-```bash
-# Terminal 1 — bot must be running
-ollama serve &
-./housebot.sh start
-
-# Terminal 2 — UI dev server
-./housebot.sh ui-dev
-```
-
-The dev server is always available at **http://localhost:5252** and proxies all `/admin/api/*` calls to the bot at `:8000`. When you’re done, rebuild the production bundle:
-
-```bash
-./housebot.sh ui-build
+./housebot.sh ui-build     # compile ui/src/ → ui/build/ (required after UI source changes)
+./housebot.sh ui-dev       # start Vite dev server on :5252 (UI development only, on demand)
 ```
 
 ### Typical startup
@@ -252,12 +233,68 @@ The dev server is always available at **http://localhost:5252** and proxies all 
 # Start Ollama (must be running before housebot.sh start)
 ollama serve &
 
-# Normal startup
+# Start the bot (auto-builds ui/build/ only if absent, i.e. fresh clone)
 ./housebot.sh start
 ./housebot.sh status
 
 # Open the control panel
 open http://localhost:8000
+```
+
+---
+
+### Pulling updates
+
+After pulling new code from git, apply changes depending on what was updated:
+
+**Python / bot logic changed** (files under `bot/`, `bridge/`, `.env.example`, `requirements.txt`):
+
+```bash
+git pull
+./housebot.sh restart
+```
+
+**UI source changed** (files under `ui/src/`):
+
+```bash
+git pull
+./housebot.sh ui-build   # recompile ui/src/ → ui/build/
+./housebot.sh restart    # restart FastAPI to serve the new bundle
+```
+
+Or in one step:
+
+```bash
+git pull && ./housebot.sh ui-build && ./housebot.sh restart
+```
+
+> `./housebot.sh restart` alone does **not** rebuild the UI — `ui/build/` is only updated by an explicit `ui-build`. This keeps restarts fast for bot-only changes.
+
+---
+
+### UI development
+
+The Control Panel has two independent serving modes:
+
+| Mode | Command | URL | Reflects source changes |
+|---|---|---|---|
+| **Dev server** | `cd ui && npm run dev` | :5252 | Instantly (HMR) |
+| **Production build** | `./housebot.sh ui-build` then `restart` | :8000 | After each build |
+
+When working on `ui/src/`, use the dev server for instant feedback, then rebuild for production when done:
+
+```bash
+# Terminal 1 — bot must be running
+ollama serve &
+./housebot.sh start
+
+# Terminal 2 — UI dev server (foreground, Ctrl+C to stop)
+cd ui && npm run dev
+# → edit files in ui/src/, changes appear at http://localhost:5252 immediately
+
+# When finished, publish to production:
+./housebot.sh ui-build && ./housebot.sh restart
+# → changes now visible at http://localhost:8000
 ```
 
 ---

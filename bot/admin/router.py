@@ -80,18 +80,19 @@ def _google_token_status() -> dict:
         from google.auth.transport.requests import Request
         creds = Credentials.from_authorized_user_file(str(_TOKEN_PATH), _GOOGLE_SCOPES)
         expiry = creds.expiry.isoformat() if creds.expiry else None
+        configured = os.getenv("GOOGLE_CALENDAR_NAME", "")
         if creds.valid:
-            return {"status": "valid", "expiry": expiry}
+            return {"status": "valid", "expiry": expiry, "configured_calendar": configured}
         if creds.expired and creds.refresh_token:
             # Silently refresh — same path as calendar_handler.get_service()
             creds.refresh(Request())
             _TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
             expiry = creds.expiry.isoformat() if creds.expiry else None
             logger.debug("🔄 Google token auto-refreshed on status check")
-            return {"status": "valid", "expiry": expiry}
+            return {"status": "valid", "expiry": expiry, "configured_calendar": configured}
         if creds.expired:
-            return {"status": "expired", "expiry": expiry, "has_refresh": False}
-        return {"status": "invalid", "expiry": expiry}
+            return {"status": "expired", "expiry": expiry, "has_refresh": False, "configured_calendar": configured}
+        return {"status": "invalid", "expiry": expiry, "configured_calendar": configured}
     except Exception as exc:
         return {"status": "invalid", "error": str(exc)}
 
@@ -263,6 +264,59 @@ async def ollama_active():
         raise HTTPException(status_code=502, detail=f"Ollama unreachable: {e}")
 
 
+@router.get("/ollama/status")
+async def ollama_status():
+    """Lightweight Ollama health check: reachability + active/configured model."""
+    import requests as _req
+    base = _ollama_base()
+    up = False
+    try:
+        r = _req.get(f"{base}/api/tags", timeout=3)
+        up = r.status_code == 200
+    except Exception:
+        pass
+
+    active_model = None
+    if up:
+        try:
+            r2 = _req.get(f"{base}/api/ps", timeout=3)
+            models = r2.json().get("models", [])
+            active_model = models[0]["name"] if models else None
+        except Exception:
+            pass
+
+    return JSONResponse(content={
+        "up": up,
+        "active_model": active_model,
+        "configured_model": os.getenv("OLLAMA_MODEL", ""),
+    })
+
+
+@router.post("/ollama/restart")
+async def ollama_restart():
+    """Restart the Ollama service (macOS: brew services or pkill + open)."""
+    import time as _time
+
+    def _do_restart():
+        # Try brew services restart first (works for brew-installed Ollama)
+        result = subprocess.run(
+            ["brew", "services", "restart", "ollama"],
+            capture_output=True, timeout=15
+        )
+        if result.returncode != 0:
+            # Fallback: kill process and relaunch as macOS app
+            subprocess.run(["pkill", "-ix", "ollama"], capture_output=True)
+            _time.sleep(1.5)
+            subprocess.Popen(
+                ["open", "-ga", "Ollama"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+
+    threading.Thread(target=_do_restart, daemon=True).start()
+    logger.info("🔄 Ollama restart initiated")
+    return JSONResponse(content={"ok": True, "message": "Ollama restart initiated"})
+
+
 class SwitchModelRequest(BaseModel):
     model: str
 
@@ -309,6 +363,128 @@ async def ollama_switch(req: SwitchModelRequest):
 
     logger.info("🧠 Model switched to %s", model)
     return JSONResponse(content={"ok": True, "model": model})
+
+
+# ── Ollama Model Catalog ─────────────────────────────────────────────────────
+
+_OLLAMA_STATIC_CATALOG = [
+    {"id": "llama3.2:1b",          "family": "Meta",        "description": "Llama 3.2 1B — ultra-fast, great for low-RAM machines",     "ram": "~1 GB"},
+    {"id": "llama3.2:3b",          "family": "Meta",        "description": "Llama 3.2 3B — small, fast and capable",                    "ram": "~2 GB"},
+    {"id": "llama3.1:8b",          "family": "Meta",        "description": "Llama 3.1 8B — great general-purpose model",                "ram": "~5 GB"},
+    {"id": "llama3.1:70b",         "family": "Meta",        "description": "Llama 3.1 70B — high quality, large",                       "ram": "~40 GB"},
+    {"id": "llama3:8b",            "family": "Meta",        "description": "Llama 3 8B",                                                "ram": "~5 GB"},
+    {"id": "llama3:70b",           "family": "Meta",        "description": "Llama 3 70B",                                               "ram": "~40 GB"},
+    {"id": "llama2:7b",            "family": "Meta",        "description": "Llama 2 7B",                                                "ram": "~4 GB"},
+    {"id": "llama2:13b",           "family": "Meta",        "description": "Llama 2 13B",                                               "ram": "~8 GB"},
+    {"id": "gemma4:e2b",           "family": "Google",      "description": "Gemma 4 E2B — multimodal (text+image), 128K context, edge device",  "ram": "~7 GB"},
+    {"id": "gemma4:e4b",           "family": "Google",      "description": "Gemma 4 E4B — multimodal (text+image), 128K context, edge device",  "ram": "~10 GB"},
+    {"id": "gemma4:26b",           "family": "Google",      "description": "Gemma 4 26B — MoE (4B active), multimodal, 256K context",           "ram": "~18 GB"},
+    {"id": "gemma4:31b",           "family": "Google",      "description": "Gemma 4 31B — dense, multimodal, 256K context",                     "ram": "~20 GB"},
+    {"id": "gemma3:1b",            "family": "Google",      "description": "Gemma 3 1B — Google's efficient small model",               "ram": "~2 GB"},
+    {"id": "gemma3:4b",            "family": "Google",      "description": "Gemma 3 4B",                                                "ram": "~4 GB"},
+    {"id": "gemma3:12b",           "family": "Google",      "description": "Gemma 3 12B",                                               "ram": "~12 GB"},
+    {"id": "gemma3:27b",           "family": "Google",      "description": "Gemma 3 27B",                                               "ram": "~24 GB"},
+    {"id": "gemma2:2b",            "family": "Google",      "description": "Gemma 2 2B",                                                "ram": "~2 GB"},
+    {"id": "gemma2:9b",            "family": "Google",      "description": "Gemma 2 9B",                                                "ram": "~6 GB"},
+    {"id": "gemma2:27b",           "family": "Google",      "description": "Gemma 2 27B",                                               "ram": "~20 GB"},
+    {"id": "mistral:7b",           "family": "Mistral",     "description": "Mistral 7B — fast and highly capable",                     "ram": "~4 GB"},
+    {"id": "mistral-small:22b",    "family": "Mistral",     "description": "Mistral Small 22B",                                        "ram": "~16 GB"},
+    {"id": "mixtral:8x7b",         "family": "Mistral",     "description": "Mixtral 8x7B Mixture-of-Experts",                          "ram": "~26 GB"},
+    {"id": "phi4:14b",             "family": "Microsoft",   "description": "Phi-4 14B — Microsoft's latest small language model",      "ram": "~10 GB"},
+    {"id": "phi4-mini:3.8b",       "family": "Microsoft",   "description": "Phi-4 Mini 3.8B",                                         "ram": "~3 GB"},
+    {"id": "phi3.5:3.8b",          "family": "Microsoft",   "description": "Phi-3.5 Mini 3.8B",                                       "ram": "~3 GB"},
+    {"id": "phi3:3.8b",            "family": "Microsoft",   "description": "Phi-3 Mini 3.8B",                                         "ram": "~2.5 GB"},
+    {"id": "phi3:14b",             "family": "Microsoft",   "description": "Phi-3 Medium 14B",                                        "ram": "~9 GB"},
+    {"id": "qwen2.5:0.5b",         "family": "Alibaba",     "description": "Qwen 2.5 0.5B — ultra-lightweight",                        "ram": "~0.5 GB"},
+    {"id": "qwen2.5:1.5b",         "family": "Alibaba",     "description": "Qwen 2.5 1.5B",                                            "ram": "~1 GB"},
+    {"id": "qwen2.5:3b",           "family": "Alibaba",     "description": "Qwen 2.5 3B",                                              "ram": "~2 GB"},
+    {"id": "qwen2.5:7b",           "family": "Alibaba",     "description": "Qwen 2.5 7B",                                              "ram": "~5 GB"},
+    {"id": "qwen2.5:14b",          "family": "Alibaba",     "description": "Qwen 2.5 14B",                                             "ram": "~10 GB"},
+    {"id": "qwen2.5:32b",          "family": "Alibaba",     "description": "Qwen 2.5 32B",                                             "ram": "~20 GB"},
+    {"id": "qwen2.5:72b",          "family": "Alibaba",     "description": "Qwen 2.5 72B",                                             "ram": "~45 GB"},
+    {"id": "qwen2:7b",             "family": "Alibaba",     "description": "Qwen 2 7B",                                                "ram": "~5 GB"},
+    {"id": "qwen2:72b",            "family": "Alibaba",     "description": "Qwen 2 72B",                                               "ram": "~43 GB"},
+    {"id": "deepseek-r1:1.5b",     "family": "DeepSeek",    "description": "DeepSeek-R1 1.5B — reasoning model",                      "ram": "~1 GB"},
+    {"id": "deepseek-r1:7b",       "family": "DeepSeek",    "description": "DeepSeek-R1 7B",                                           "ram": "~5 GB"},
+    {"id": "deepseek-r1:8b",       "family": "DeepSeek",    "description": "DeepSeek-R1 8B",                                           "ram": "~5 GB"},
+    {"id": "deepseek-r1:14b",      "family": "DeepSeek",    "description": "DeepSeek-R1 14B",                                          "ram": "~9 GB"},
+    {"id": "deepseek-r1:32b",      "family": "DeepSeek",    "description": "DeepSeek-R1 32B",                                          "ram": "~20 GB"},
+    {"id": "deepseek-r1:70b",      "family": "DeepSeek",    "description": "DeepSeek-R1 70B",                                          "ram": "~43 GB"},
+    {"id": "codellama:7b",         "family": "Meta",        "description": "Code Llama 7B — coding specialist",                        "ram": "~4 GB"},
+    {"id": "codellama:13b",        "family": "Meta",        "description": "Code Llama 13B",                                           "ram": "~8 GB"},
+    {"id": "codellama:34b",        "family": "Meta",        "description": "Code Llama 34B",                                           "ram": "~20 GB"},
+    {"id": "starcoder2:3b",        "family": "BigCode",     "description": "StarCoder2 3B — code generation",                          "ram": "~2 GB"},
+    {"id": "starcoder2:7b",        "family": "BigCode",     "description": "StarCoder2 7B",                                            "ram": "~4 GB"},
+    {"id": "starcoder2:15b",       "family": "BigCode",     "description": "StarCoder2 15B",                                           "ram": "~9 GB"},
+    {"id": "nomic-embed-text",     "family": "Nomic",       "description": "Nomic Embed Text — text embeddings",                       "ram": "~0.3 GB"},
+    {"id": "mxbai-embed-large",    "family": "MixedBread",  "description": "MixBread Embed Large — high-quality embeddings",           "ram": "~0.7 GB"},
+    {"id": "command-r:35b",        "family": "Cohere",      "description": "Command-R 35B — RAG-optimised model",                     "ram": "~21 GB"},
+    {"id": "vicuna:7b",            "family": "LMSYS",       "description": "Vicuna 7B — instruction-tuned",                            "ram": "~4 GB"},
+    {"id": "vicuna:13b",           "family": "LMSYS",       "description": "Vicuna 13B",                                               "ram": "~8 GB"},
+    {"id": "zephyr:7b",            "family": "HuggingFace", "description": "Zephyr 7B — aligned RLHF assistant",                       "ram": "~4 GB"},
+    {"id": "solar:10.7b",          "family": "Upstage",     "description": "Solar 10.7B",                                              "ram": "~7 GB"},
+    {"id": "tinyllama:1.1b",       "family": "TinyLlama",   "description": "TinyLlama 1.1B — very lightweight",                        "ram": "~0.7 GB"},
+    {"id": "stablelm2:1.6b",       "family": "Stability",   "description": "StableLM 2 1.6B",                                         "ram": "~1 GB"},
+    {"id": "neural-chat:7b",       "family": "Intel",       "description": "Neural Chat 7B by Intel",                                  "ram": "~4 GB"},
+    {"id": "openhermes:7b",        "family": "NousResearch","description": "OpenHermes 2.5 7B",                                        "ram": "~4 GB"},
+    {"id": "orca-mini:3b",         "family": "Orca",        "description": "Orca Mini 3B",                                             "ram": "~2 GB"},
+    {"id": "orca-mini:7b",         "family": "Orca",        "description": "Orca Mini 7B",                                             "ram": "~4 GB"},
+]
+
+
+@router.get("/ollama/catalog")
+async def ollama_catalog(q: str = ""):
+    """Return the Ollama model catalog (static list), pre-filtered to exclude installed models."""
+    import requests as _req
+
+    base = _ollama_base()
+    try:
+        r = _req.get(f"{base}/api/tags", timeout=5)
+        r.raise_for_status()
+        installed_names = {m["name"] for m in r.json().get("models", [])}
+        # Also match base name (e.g. "llama3.2" matches "llama3.2:3b" installed as "llama3.2:3b")
+        installed_base = {n.split(":")[0] for n in installed_names}
+    except Exception:
+        installed_names = set()
+        installed_base = set()
+
+    q_lower = q.strip().lower()
+    catalog = []
+    for m in _OLLAMA_STATIC_CATALOG:
+        if m["id"] in installed_names:
+            continue
+        if q_lower and q_lower not in m["id"].lower() and q_lower not in m["family"].lower() and q_lower not in m["description"].lower():
+            continue
+        catalog.append(m)
+
+    return JSONResponse(content={"catalog": catalog, "installed": list(installed_names)})
+
+
+class DeleteModelRequest(BaseModel):
+    model: str
+
+
+@router.delete("/ollama/models")
+async def ollama_delete_model(req: DeleteModelRequest):
+    """Delete a locally pulled Ollama model via the Ollama API."""
+    import requests as _req
+
+    model = req.model.strip()
+    if not model:
+        raise HTTPException(status_code=400, detail="model name is required")
+
+    base = _ollama_base()
+    try:
+        r = _req.delete(f"{base}/api/delete", json={"name": model}, timeout=15)
+        if r.status_code == 404:
+            raise HTTPException(status_code=404, detail=f"Model '{model}' not found locally")
+        r.raise_for_status()
+        logger.info("🗑️  Model deleted: %s", model)
+        return JSONResponse(content={"ok": True, "model": model})
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Ollama unreachable: {e}")
 
 
 # ── Service Control ─────────────────────────────────────────────────────────
@@ -556,6 +732,31 @@ async def install_ollama_pull(req: PullModelRequest):
     )
 
 
+@router.post("/install/ollama/pull/cancel")
+async def install_ollama_pull_cancel(req: PullModelRequest):
+    """
+    Cancel an in-flight model pull and delete any partial blobs from Ollama's cache.
+    The client is responsible for aborting the SSE fetch; this endpoint cleans up.
+    """
+    import requests as _req
+
+    model = req.model.strip()
+    if not model:
+        raise HTTPException(status_code=400, detail="model is required")
+
+    base = _ollama_base()
+    try:
+        r = _req.delete(f"{base}/api/delete", json={"name": model}, timeout=15)
+        # 404 means nothing was cached yet — treat as success
+        if r.status_code not in (200, 404):
+            r.raise_for_status()
+    except Exception as e:
+        logger.warning("⚠️  Could not clean up partial pull for %s: %s", model, e)
+
+    logger.info("🚫 Pull cancelled and cleaned up: %s", model)
+    return JSONResponse(content={"ok": True, "model": model})
+
+
 @router.post("/install/ollama/chat")
 async def install_ollama_chat(req: ChatTestRequest):
     """
@@ -641,6 +842,34 @@ async def set_keep_alive(req: KeepAliveRequest):
     return JSONResponse(content={"ok": True, "value": value})
 
 
+# ── Whisper model ─────────────────────────────────────────────────────────────
+
+WHISPER_MODELS = ["tiny", "base", "small", "medium", "large", "large-v2", "large-v3"]
+
+
+@router.get("/install/whisper/model")
+async def get_whisper_model():
+    """Return the current WHISPER_MODEL value from .env (or OS env)."""
+    value = os.getenv("WHISPER_MODEL", "small") or "small"
+    return JSONResponse(content={"value": value})
+
+
+class WhisperModelRequest(BaseModel):
+    value: str
+
+
+@router.post("/install/whisper/model")
+async def set_whisper_model(req: WhisperModelRequest):
+    """Write WHISPER_MODEL to .env."""
+    value = req.value.strip()
+    if value not in WHISPER_MODELS:
+        raise HTTPException(status_code=400, detail=f"Invalid model. Choose one of: {', '.join(WHISPER_MODELS)}")
+    _env_set("WHISPER_MODEL", value)
+    os.environ["WHISPER_MODEL"] = value
+    logger.info("🎙️  WHISPER_MODEL set to %s", value)
+    return JSONResponse(content={"ok": True, "value": value})
+
+
 # ── WhatsApp App Name ────────────────────────────────────────────────────────
 
 class WaAppNameRequest(BaseModel):
@@ -680,6 +909,32 @@ async def install_whatsapp_qr():
         return JSONResponse(content=r.json(), status_code=r.status_code)
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Bridge unreachable: {exc}")
+
+
+# ── WhatsApp Disconnect ───────────────────────────────────────────────────────
+
+@router.post("/install/whatsapp/disconnect")
+async def whatsapp_disconnect():
+    """
+    Disconnect the WhatsApp session:
+    1. Stop the bridge
+    2. Wipe all Baileys auth files
+    3. Restart the bridge (will regenerate a fresh QR)
+    """
+    import asyncio
+    import shutil
+
+    _stop_service("bridge")
+    await asyncio.sleep(1.0)
+
+    auth_dir = _PROJECT_ROOT / "bridge" / "baileys_auth"
+    if auth_dir.exists():
+        shutil.rmtree(auth_dir)
+    auth_dir.mkdir(exist_ok=True)
+
+    _start_bridge()
+    logger.info("📱 WhatsApp session disconnected — bridge restarted for fresh QR")
+    return JSONResponse(content={"ok": True})
 
 
 # ── Google OAuth endpoints ────────────────────────────────────────────────────
@@ -816,6 +1071,63 @@ async def google_auth_revoke():
     return JSONResponse(content={"ok": True, "status": "missing"})
 
 
+@router.get("/install/google-auth/calendars")
+@router.get("/google-auth/calendars")
+async def google_list_calendars():
+    """List all Google Calendars available to the authorized account."""
+    if not _TOKEN_PATH.exists():
+        raise HTTPException(status_code=400, detail="No token found — authorize first.")
+    try:
+        from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request
+        from googleapiclient.discovery import build
+        creds = Credentials.from_authorized_user_file(str(_TOKEN_PATH), _GOOGLE_SCOPES)
+        if creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+            _TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
+        service = build("calendar", "v3", credentials=creds)
+        items: list = []
+        page_token = None
+        while True:
+            kwargs = {"pageToken": page_token} if page_token else {}
+            result = service.calendarList().list(**kwargs).execute()
+            items.extend(result.get("items", []))
+            page_token = result.get("nextPageToken")
+            if not page_token:
+                break
+        calendars = [
+            {
+                "id": c["id"],
+                "name": c["summary"],
+                "primary": c.get("primary", False),
+            }
+            for c in items
+        ]
+        configured = os.getenv("GOOGLE_CALENDAR_NAME", "")
+        return JSONResponse(content={"calendars": calendars, "configured": configured})
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+class SetCalendarRequest(BaseModel):
+    name: str
+
+
+@router.post("/install/google-auth/calendar")
+@router.post("/google-auth/calendar")
+async def google_set_calendar(req: SetCalendarRequest):
+    """Save the chosen Google Calendar name to .env."""
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Calendar name is required.")
+    _env_set("GOOGLE_CALENDAR_NAME", name)
+    os.environ["GOOGLE_CALENDAR_NAME"] = name
+    logger.info("📅 GOOGLE_CALENDAR_NAME set to '%s'", name)
+    return JSONResponse(content={"ok": True, "name": name})
+
+
 # ── Sender Restrictions (Install Wizard) ─────────────────────────────────────
 
 class AuthorizeSenderRequest(BaseModel):
@@ -920,12 +1232,6 @@ async def authorize_sender(req: AuthorizeSenderRequest):
 
 # ── Location & Briefing Settings (Install Wizard) ────────────────────────────
 
-_BRIEFING_LANGUAGES = [
-    "English", "Spanish", "Italian", "French", "German",
-    "Portuguese", "Dutch", "Polish", "Russian", "Japanese",
-    "Chinese", "Arabic", "Turkish", "Korean", "Swedish",
-]
-
 _TIMEZONES = [
     "Africa/Abidjan", "Africa/Cairo", "Africa/Johannesburg", "Africa/Lagos",
     "America/Argentina/Buenos_Aires", "America/Bogota", "America/Chicago",
@@ -961,7 +1267,6 @@ async def get_location_settings():
         "longitude":         os.getenv("DEFAULT_LONGITUDE", ""),
         "timezone":          os.getenv("TIMEZONE_DEFAULT", ""),
         "briefing_language": os.getenv("BRIEFING_LANGUAGE", "English"),
-        "briefing_languages": _BRIEFING_LANGUAGES,
         "timezones":         _TIMEZONES,
     })
 

@@ -27,11 +27,12 @@
 
 	<!-- Welcome -->
 	<div class="flex items-center gap-8 pt-2 pb-4">
-		<img src={isDark ? '/housebot_logo_v2_small_dark.png' : '/housebot_logo_v2_small.png'} alt="HouseBot" class="h-50 w-auto shrink-0" />
+		<img src={isDark ? '/housebot_logo_v2_dark_small.png' : '/housebot_logo_v2_small.png'} alt="HouseBot" class="h-50 w-auto shrink-0" />
 		<div class="flex-1 flex flex-col gap-4">
 			<p class="text-lg text-gray-500 dark:text-gray-400 leading-relaxed">
-				Domestic WhatsApp bot — shopping list, weather, and Google Calendar.
-				Runs entirely locally with Ollama + faster-whisper.
+				Your private housebot on WhatsApp.<br />
+				Manage shopping lists, Google Calendar events, and real-time weather.<br />
+				Privacy-first by design — powered entirely by local AI, your data never leaves home.
 			</p>
 			<button
 				onclick={toggleMode}
@@ -48,11 +49,10 @@
 	<!-- Quick links grid -->
 	<div class="grid grid-cols-2 sm:grid-cols-3 gap-4">
 		{#each [
-			{ href: '/install', icon: '🚀', label: 'Installation',  desc: 'Run or re-run the setup wizard' },
-			{ href: '/status',  icon: '⚡', label: 'Status',        desc: 'Live health + logs' },
-			{ href: '/admin',   icon: '🔧', label: 'Admin',         desc: 'Services, model manager' },
-			{ href: '/prompts', icon: '✏️',  label: 'Prompting',     desc: 'Edit LLM prompts per skill' },
-			{ href: '/config',  icon: '⚙️',  label: 'Configuration', desc: 'Edit .env settings' },
+			{ href: '/config', icon: '⚙️',  label: 'Configuration', desc: 'Configure your housebot' },
+			{ href: '/admin',   icon: '🔧', label: 'Admin',          desc: 'Manage your housebot services' },
+			{ href: '/status',  icon: '⚡', label: 'Status',         desc: 'Live health + logs' },
+			{ href: '/prompts', icon: '✏️',  label: 'Prompting',      desc: 'Customize your housebot behaviours' },
 		] as link}
 			<a
 				href={link.href}
@@ -68,21 +68,4 @@
 		{/each}
 	</div>
 
-	<!-- Installation CTA -->
-	<div class="card bg-surface-50-950 border border-surface-200-800 rounded-xl p-5 flex flex-col sm:flex-row items-start sm:items-center gap-4">
-		<div class="flex-1">
-			<p class="font-semibold text-base">First time here?</p>
-			<p class="text-sm text-surface-400-600 mt-1">
-				The installation wizard will guide you through prerequisites, <code class="font-mono text-xs">.env</code> configuration,
-				Google OAuth, WhatsApp pairing, and a smoke test.
-			</p>
-		</div>
-		<a
-			href="/install"
-			class="shrink-0 px-4 py-2 rounded-lg text-sm font-medium bg-primary-500/15 text-primary-400
-			hover:bg-primary-500/30 transition-colors"
-		>
-			🚀 Start Installation Wizard
-		</a>
-	</div>
 </div>

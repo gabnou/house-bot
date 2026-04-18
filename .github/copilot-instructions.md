@@ -187,7 +187,7 @@ All endpoints are under `/admin/api/` and registered on the FastAPI app in `bot/
 - **Tailwind v4**: `@variant dark (&:where(.dark, .dark *));` in `app.css` is required for class-based dark mode (v4 defaults to media query)
 - **Dark mode**: `.dark` class on `<html>` toggled via `localStorage` key `'colorMode'`. Both layout and home page keep a `toggleMode()` that syncs `classList` + storage
 - **Adapter**: `adapter-static`, `fallback: 'index.html'`, builds to `ui/build/`. SSR disabled via `ui/src/routes/+layout.ts` (`ssr = false`, `prerender = false`)
-- **Vite**: port 5252, `host: '127.0.0.1'` (not `localhost` — macOS CyberArk EPM blocks IPv6). Proxy `/admin/api` → `:8000` with 503 JSON error handler
+- **Vite**: port 5252, `host: 'localhost'`. Proxy `/admin/api` → `:8000` with 503 JSON error handler
 - **Git info**: baked at build time in `vite.config.ts` via Vite `define` — `__GIT_HASH__`, `__GIT_DATE__`, `__GIT_BRANCH__`, `__GIT_COMMIT_URL__`. Displayed as a badge in the page footer (all pages)
 - **Pages**:
   - `/` — home: logo, quick-link grid, dark/light toggle, CTA to install wizard
@@ -272,6 +272,6 @@ All config is in `.env` (see `.env.example`). Key variables:
 - If a file cannot be edited via tools, ask the user to do it — do not create external scripts as a workaround.
 - Always find simple solutions that do not require new dependencies or complex refactors. If a change is needed across multiple files explain it clearly and seek for approvals before proceeding.
 - Before answering any prompt, always check the grammar and spelling of my input. If you find errors, provide a brief 'Proofread' section at the beginning of your response with the corrected text.
-
+- After executing and testing code changes, provide the option to commit the changes in git with a clear commit message. Do not commit without asking.
 
 

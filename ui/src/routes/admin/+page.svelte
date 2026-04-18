@@ -1,76 +1,10 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 
-	// ── Types ──────────────────────────────────────────────────────────────
-	interface OllamaModel {
-		name: string;
-		size_gb: number;
-		modified: string;
-		family: string;
-		params: string;
-	}
-
-	// ── Model Manager state ────────────────────────────────────────────────
-	let models = $state<OllamaModel[]>([]);
-	let configured = $state('');
-	let activeModel = $state<string | null>(null);
-	let modelsLoading = $state(true);
-	let modelsError = $state<string | null>(null);
-	let switchingTo = $state<string | null>(null);
-	let switchMsg = $state<{ ok: boolean; text: string } | null>(null);
-
 	// ── Service Control state ──────────────────────────────────────────────
 	type SvcKey = 'fastapi' | 'bridge' | 'scheduler';
 	let svcBusy = $state<Record<SvcKey, boolean>>({ fastapi: false, bridge: false, scheduler: false });
 	let svcMsg = $state<{ ok: boolean; text: string } | null>(null);
-
-	// ── API helpers ────────────────────────────────────────────────────────
-	async function fetchModels() {
-		modelsLoading = true;
-		modelsError = null;
-		try {
-			const [mRes, aRes] = await Promise.all([
-				fetch('/admin/api/ollama/models'),
-				fetch('/admin/api/ollama/active'),
-			]);
-			if (!mRes.ok) throw new Error(`Models: HTTP ${mRes.status}`);
-			const mData = await mRes.json();
-			models = mData.models ?? [];
-			configured = mData.configured ?? '';
-			if (aRes.ok) {
-				const aData = await aRes.json();
-				activeModel = aData.active ?? null;
-			}
-		} catch (e: unknown) {
-			modelsError = e instanceof Error ? e.message : 'Unknown error';
-		} finally {
-			modelsLoading = false;
-		}
-	}
-
-	async function switchModel(name: string) {
-		if (switchingTo) return;
-		switchingTo = name;
-		switchMsg = null;
-		try {
-			const res = await fetch('/admin/api/ollama/switch', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ model: name }),
-			});
-			const data = await res.json();
-			if (res.ok && data.ok) {
-				configured = name;
-				switchMsg = { ok: true, text: `Switched to ${name}. Model loads on next message.` };
-			} else {
-				switchMsg = { ok: false, text: data.detail ?? 'Switch failed' };
-			}
-		} catch (e: unknown) {
-			switchMsg = { ok: false, text: e instanceof Error ? e.message : 'Request failed' };
-		} finally {
-			switchingTo = null;
-		}
-	}
 
 	async function serviceAction(
 		service: SvcKey | 'all',
@@ -102,35 +36,11 @@
 		}
 	}
 
-	// ── Google Account state ───────────────────────────────────────────────
+	// ── Google Account state ──────────────────────────────────────────────
 	type GoogleStatus = 'unknown' | 'valid' | 'missing' | 'expired' | 'invalid';
 	let googleStatus = $state<GoogleStatus>('unknown');
 	let googleExpiry = $state<string | null>(null);
-	let googleHasRefresh = $state(false);
-	let googleCredsExist = $state(true);
-	let googleFlowRunning = $state(false);
-	let googleAuthUrl = $state<string | null>(null);
-	let googleLoading = $state(false);
-	let googleMsg = $state<{ ok: boolean; text: string } | null>(null);
-
-	let _googlePollTimer: ReturnType<typeof setInterval> | null = null;
-
-	function _startPolling() {
-		if (_googlePollTimer) return;
-		_googlePollTimer = setInterval(async () => {
-			await loadGoogleStatus();
-			if (googleStatus === 'valid') {
-				_stopPolling();
-				googleAuthUrl = null;
-				googleFlowRunning = false;
-				googleMsg = { ok: true, text: 'Token saved — authorization complete!' };
-			}
-		}, 3000);
-	}
-
-	function _stopPolling() {
-		if (_googlePollTimer) { clearInterval(_googlePollTimer); _googlePollTimer = null; }
-	}
+	let googleConfiguredCalendar = $state('');
 
 	async function loadGoogleStatus() {
 		try {
@@ -139,88 +49,47 @@
 				const data = await res.json();
 				googleStatus = data.status ?? 'unknown';
 				googleExpiry = data.expiry ?? null;
-				googleHasRefresh = data.has_refresh ?? false;
-				googleCredsExist = data.credentials_exist ?? true;
-				googleFlowRunning = data.flow_running ?? false;
+				googleConfiguredCalendar = data.configured_calendar ?? '';
 			}
 		} catch { /* non-fatal */ }
 	}
 
-	async function startGoogleAuth() {
-		googleLoading = true;
-		googleMsg = null;
-		googleAuthUrl = null;
-		try {
-			const res = await fetch('/admin/api/google-auth', { method: 'POST' });
-			const data = await res.json();
-			if (res.ok && data.ok) {
-				googleAuthUrl = data.auth_url;
-				googleFlowRunning = true;
-				window.open(data.auth_url, '_blank', 'noopener,noreferrer');
-				_startPolling();
-			} else {
-				googleMsg = { ok: false, text: data.detail ?? 'Failed to start OAuth flow' };
-			}
-		} catch (e: unknown) {
-			googleMsg = { ok: false, text: e instanceof Error ? e.message : 'Request failed' };
-		} finally {
-			googleLoading = false;
-		}
-	}
+	// ── Ollama AI Engine state ─────────────────────────────────────────────
+	let ollamaUp = $state<boolean | null>(null);
+	let ollamaActiveModel = $state<string | null>(null);
+	let ollamaConfiguredModel = $state('');
+	let ollamaBusy = $state(false);
+	let ollamaMsg = $state<{ ok: boolean; text: string } | null>(null);
 
-	async function refreshGoogleToken() {
-		googleLoading = true;
-		googleMsg = null;
+	async function loadOllamaStatus() {
 		try {
-			const res = await fetch('/admin/api/google-auth/refresh', { method: 'POST' });
-			const data = await res.json();
-			if (res.ok && data.ok) {
-				googleMsg = { ok: true, text: 'Token refreshed successfully.' };
-				await loadGoogleStatus();
-			} else {
-				googleMsg = { ok: false, text: data.detail ?? 'Refresh failed' };
-			}
-		} catch (e: unknown) {
-			googleMsg = { ok: false, text: e instanceof Error ? e.message : 'Request failed' };
-		} finally {
-			googleLoading = false;
-		}
-	}
-
-	async function revokeGoogleToken() {
-		googleLoading = true;
-		googleMsg = null;
-		try {
-			const res = await fetch('/admin/api/google-auth', { method: 'DELETE' });
-			const data = await res.json();
+			const res = await fetch('/admin/api/ollama/status');
 			if (res.ok) {
-				googleMsg = { ok: true, text: 'Token revoked — re-authorization required.' };
-				googleStatus = 'missing';
-				googleExpiry = null;
-				googleAuthUrl = null;
-			} else {
-				googleMsg = { ok: false, text: data.detail ?? 'Revoke failed' };
+				const data = await res.json();
+				ollamaUp = data.up ?? false;
+				ollamaActiveModel = data.active_model ?? null;
+				ollamaConfiguredModel = data.configured_model ?? '';
 			}
+		} catch { /* non-fatal */ }
+	}
+
+	async function restartOllama() {
+		ollamaBusy = true;
+		ollamaMsg = null;
+		try {
+			const res = await fetch('/admin/api/ollama/restart', { method: 'POST' });
+			const data = await res.json();
+			ollamaMsg = data.ok
+				? { ok: true, text: 'Restart initiated — Ollama will be back in a few seconds.' }
+				: { ok: false, text: data.detail ?? 'Restart failed.' };
 		} catch (e: unknown) {
-			googleMsg = { ok: false, text: e instanceof Error ? e.message : 'Request failed' };
+			ollamaMsg = { ok: false, text: e instanceof Error ? e.message : 'Request failed' };
 		} finally {
-			googleLoading = false;
+			ollamaBusy = false;
 		}
 	}
 
-	async function pollGoogleStatus() {
-		googleMsg = null;
-		await loadGoogleStatus();
-		if (googleStatus === 'valid') {
-			googleAuthUrl = null;
-			googleFlowRunning = false;
-			googleMsg = { ok: true, text: 'Token saved — authorization complete!' };
-		} else if (googleFlowRunning) {
-			googleMsg = { ok: false, text: 'Not yet — complete the sign-in in the browser tab.' };
-		}
-	}
-
-	onMount(() => { fetchModels(); loadGoogleStatus(); });
+	onMount(() => { loadGoogleStatus(); loadOllamaStatus(); });
 </script>
 
 <div class="space-y-6">
@@ -230,7 +99,7 @@
 		<span class="text-3xl">🔧</span>
 		<div>
 			<h2 class="text-lg font-bold">Admin</h2>
-			<p class="text-xs text-surface-400-600 mt-0.5">Service control, model management, account maintenance, and software updates.</p>
+			<p class="text-xs text-surface-400-600 mt-0.5">Service control, account maintenance, and software updates.</p>
 		</div>
 	</div>
 
@@ -295,139 +164,73 @@
 		</div>
 	</div>
 
-	<!-- ── Model Manager ───────────────────────────────────────────────── -->
+	<!-- ── Ollama AI Engine ──────────────────────────────────────── -->
 	<div class="card bg-surface-50-950 border border-surface-200-800 rounded-xl overflow-hidden">
 		<div class="px-5 py-3.5 border-b border-surface-200-800 flex items-center gap-2">
 			<span>🧠</span>
-			<h3 class="font-semibold text-sm">Model Manager</h3>
+			<h3 class="font-semibold text-sm">Ollama AI Engine</h3>
 			<button
-				onclick={fetchModels}
-				disabled={modelsLoading}
+				onclick={loadOllamaStatus}
 				class="ml-auto text-xs px-2 py-1 rounded bg-surface-100-900 hover:bg-surface-200-800
-				text-surface-500-500 transition-colors disabled:opacity-40"
-			>
-				{modelsLoading ? '…' : '↻ Refresh'}
-			</button>
+				text-surface-500-500 transition-colors"
+			>↻ Refresh</button>
 		</div>
-		<div class="p-5">
-			{#if modelsError}
-				<div class="text-xs text-error-400 bg-error-500/10 px-3 py-2 rounded-lg">
-					{modelsError.includes('502') || modelsError.includes('503')
-						? '⚠️ Ollama is offline' : modelsError}
+		<div class="p-5 space-y-3">
+			<!-- Status + Restart row -->
+			<div class="flex items-center gap-3 px-4 py-3 rounded-xl border
+				{ollamaUp === true  ? 'border-success-500/40 bg-success-500/5' :
+				 ollamaUp === false ? 'border-error-500/40 bg-error-500/5' :
+				                     'border-surface-200-800 bg-surface-100-900/50'}">
+				<div class="w-2.5 h-2.5 rounded-full shrink-0
+					{ollamaUp === true  ? 'bg-success-500' :
+					 ollamaUp === false ? 'bg-error-400' : 'bg-surface-400-600'}"></div>
+				<div class="flex-1">
+					<p class="text-xs font-semibold">
+						{ollamaUp === null ? 'Checking…' : ollamaUp ? 'Running' : 'Not reachable'}
+					</p>
+					{#if ollamaActiveModel}
+						<p class="text-[10px] text-surface-400-600 mt-0.5">Active: {ollamaActiveModel}</p>
+					{:else if ollamaConfiguredModel}
+						<p class="text-[10px] text-surface-400-600 mt-0.5">Configured: {ollamaConfiguredModel}</p>
+					{/if}
 				</div>
-			{:else if modelsLoading}
-				<div class="space-y-2">
-					{#each [1,2,3] as _}
-						<div class="h-12 rounded-lg bg-surface-100-900 animate-pulse"></div>
-					{/each}
+				<button
+					onclick={restartOllama}
+					disabled={ollamaBusy}
+					class="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium
+					bg-primary-500/15 text-primary-400 hover:bg-primary-500/30
+					transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+				>
+					{ollamaBusy ? '…' : '🔄 Restart'}
+				</button>
+			</div>
+
+			{#if ollamaMsg}
+				<div class="text-xs px-3 py-2 rounded-lg {ollamaMsg.ok ? 'bg-success-500/10 text-success-500' : 'bg-error-500/10 text-error-400'}">
+					{ollamaMsg.text}
 				</div>
-			{:else if models.length === 0}
-				<p class="text-sm text-surface-400-600 italic">
-					No models found. Pull one with <code class="font-mono text-xs">ollama pull &lt;model&gt;</code>
-				</p>
-			{:else}
-				<div class="space-y-2">
-					{#each models as m}
-						{@const isCfg    = m.name === configured}
-						{@const isActive = m.name === activeModel}
-						<div class="flex items-center gap-3 px-4 py-3 rounded-xl border transition-colors
-							{isCfg
-								? 'border-primary-500/40 bg-primary-500/5'
-								: 'border-surface-200-800 bg-surface-100-900/50'}">
-
-							<!-- Status dot -->
-							<div class="w-2 h-2 rounded-full shrink-0
-								{isActive
-									? 'bg-success-500 shadow-[0_0_5px_1px_rgba(34,197,94,.5)]'
-									: isCfg ? 'bg-primary-400' : 'bg-surface-300-700'}">
-							</div>
-
-							<!-- Name + meta -->
-							<div class="flex-1 min-w-0">
-								<p class="font-mono text-xs font-medium truncate">{m.name}</p>
-								<p class="text-[10px] text-surface-400-600 mt-0.5">
-									{m.size_gb} GB
-									{#if m.params} · {m.params}{/if}
-									{#if m.family} · {m.family}{/if}
-								</p>
-							</div>
-
-							<!-- Badges -->
-							{#if isActive}
-								<span class="text-[10px] font-medium px-1.5 py-0.5 rounded bg-success-500/20 text-success-500 shrink-0">in memory</span>
-							{/if}
-							{#if isCfg}
-								<span class="text-[10px] font-medium px-1.5 py-0.5 rounded bg-primary-500/20 text-primary-400 shrink-0">configured</span>
-							{/if}
-
-							<!-- Switch button -->
-							<button
-								onclick={() => switchModel(m.name)}
-								disabled={isCfg || !!switchingTo}
-								class="text-xs px-3 py-1.5 rounded-lg font-medium transition-colors shrink-0
-								{isCfg
-									? 'bg-surface-200-800 text-surface-400-600 cursor-default'
-									: 'bg-primary-500/15 text-primary-400 hover:bg-primary-500/30'}
-								disabled:opacity-40 disabled:cursor-not-allowed"
-							>
-								{switchingTo === m.name ? '…' : isCfg ? 'Active' : 'Use'}
-							</button>
-						</div>
-					{/each}
-				</div>
-
-				{#if switchMsg}
-					<div class="mt-3 text-xs px-3 py-2 rounded-lg
-						{switchMsg.ok ? 'bg-success-500/10 text-success-500' : 'bg-error-500/10 text-error-400'}">
-						{switchMsg.text}
-					</div>
-				{/if}
-
-				<p class="mt-3 text-[10px] text-surface-400-600">
-					<span class="inline-block w-2 h-2 rounded-full bg-success-500 mr-1 align-middle"></span>in memory
-					&nbsp;&nbsp;
-					<span class="inline-block w-2 h-2 rounded-full bg-primary-400 mr-1 align-middle"></span>configured in .env
-				</p>
 			{/if}
+
+			<!-- Disclaimer -->
+			<p class="text-[11px] text-surface-400-600">
+				Use Restart only if Ollama is unresponsive or unreachable. To switch to a different model, go to the
+				<a href="/config" class="text-primary-400 hover:underline">Configuration page</a>.
+			</p>
 		</div>
 	</div>
 
-	<!-- ── WhatsApp / Baileys (Phase 5) ───────────────────────────────── -->
-	<div class="card bg-surface-50-950 border border-surface-200-800 rounded-xl overflow-hidden">
-		<div class="px-5 py-3.5 border-b border-surface-200-800 flex items-center gap-2">
-			<span>📱</span>
-			<h3 class="font-semibold text-sm">WhatsApp / Baileys</h3>
-		</div>
-		<div class="p-5 flex flex-col sm:flex-row gap-3">
-			{#each [
-				{ label: 'Show QR Code',     icon: '📷', desc: 'Re-pair device' },
-				{ label: 'Clear Auth State', icon: '🗑️',  desc: 'Full reset + re-pair' },
-				{ label: 'Detect JIDs',      icon: '👤', desc: 'Auto-detect partner' },
-			] as action}
-				<div class="flex-1 flex items-center gap-3 px-4 py-3 rounded-xl border border-surface-200-800 bg-surface-100-900 opacity-50">
-					<span class="text-xl">{action.icon}</span>
-					<div>
-						<p class="font-semibold text-xs">{action.label}</p>
-						<p class="text-[10px] text-surface-400-600">{action.desc}</p>
-					</div>
-				</div>
-			{/each}
-		</div>
-	</div>
-
-	<!-- ── Google Account ────────────────────────────────────────────── -->
+	<!-- ── Google Calendar ──────────────────────────────────────── -->
 	<div class="card bg-surface-50-950 border border-surface-200-800 rounded-xl overflow-hidden">
 		<div class="px-5 py-3.5 border-b border-surface-200-800 flex items-center gap-2">
 			<span>🔑</span>
-			<h3 class="font-semibold text-sm">Google Account</h3>
+			<h3 class="font-semibold text-sm">Google Calendar</h3>
 			<button
 				onclick={loadGoogleStatus}
 				class="ml-auto text-xs px-2 py-1 rounded bg-surface-100-900 hover:bg-surface-200-800
 				text-surface-500-500 transition-colors"
 			>↻ Refresh</button>
 		</div>
-		<div class="p-5 space-y-4">
-
+		<div class="p-5 space-y-3">
 			<!-- Token status row -->
 			<div class="flex items-center gap-3 px-4 py-3 rounded-xl border
 				{googleStatus === 'valid'   ? 'border-success-500/40 bg-success-500/5' :
@@ -446,94 +249,21 @@
 					{/if}
 				</div>
 			</div>
-
-			<!-- Pending auth banner -->
-			{#if googleFlowRunning && googleAuthUrl}
-				<div class="flex items-start gap-3 px-4 py-3 rounded-xl border border-primary-500/30 bg-primary-500/5">
-					<span class="text-lg mt-0.5">🌐</span>
-					<div class="flex-1 min-w-0">
-						<p class="text-xs font-semibold text-primary-400">Waiting for authorization…</p>
-						<p class="text-xs text-surface-400-600 mt-1">
-							Complete the sign-in in the browser tab. If it didn't open,
-							<a href={googleAuthUrl} target="_blank" rel="noopener noreferrer" class="text-primary-400 hover:underline">click here</a>.
-						</p>
-					</div>
-					<button
-						onclick={pollGoogleStatus}
-						class="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium bg-primary-500/20 text-primary-400
-						hover:bg-primary-500/30 transition-colors"
-					>Check again</button>
+			<!-- Configured calendar name -->
+			{#if googleConfiguredCalendar}
+				<div class="flex items-center gap-2 px-4 py-2 rounded-lg border border-surface-200-800 bg-surface-100-900/50">
+					<span class="text-sm">📅</span>
+					<p class="text-xs text-surface-400-600">Calendar: <span class="font-medium text-surface-900-50">{googleConfiguredCalendar}</span></p>
 				</div>
 			{/if}
-
-			<!-- Action buttons -->
-			<div class="flex flex-wrap gap-2">
-				<!-- Create / Re-authorize -->
-				<button
-					onclick={startGoogleAuth}
-					disabled={googleLoading || googleFlowRunning || !googleCredsExist}
-					class="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors
-					{googleStatus === 'valid'
-						? 'bg-primary-500/15 text-primary-400 hover:bg-primary-500/30'
-						: 'bg-primary-500/20 text-primary-400 hover:bg-primary-500/30 border border-primary-500/40'}
-					disabled:opacity-40 disabled:cursor-not-allowed"
-				>
-					{googleLoading ? '…' : googleFlowRunning ? '⏳ Waiting…' :
-					 googleStatus === 'valid' ? '🔑 Re-authorize' : '🔑 Create Token'}
-				</button>
-
-				<!-- Refresh (only when expired with refresh token) -->
-				{#if googleStatus === 'expired' && googleHasRefresh}
-					<button
-						onclick={refreshGoogleToken}
-						disabled={googleLoading}
-						class="px-3 py-1.5 rounded-lg text-xs font-medium bg-success-500/15 text-success-500
-						hover:bg-success-500/25 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-					>
-						{googleLoading ? '…' : '🔄 Refresh Token'}
-					</button>
-				{/if}
-
-				<!-- Token Status -->
-				<button
-					onclick={loadGoogleStatus}
-					class="px-3 py-1.5 rounded-lg text-xs font-medium bg-surface-100-900 hover:bg-surface-200-800
-					text-surface-500-500 transition-colors"
-				>
-					✅ Token Status
-				</button>
-
-				<!-- Revoke -->
-				{#if googleStatus !== 'missing'}
-					<button
-						onclick={revokeGoogleToken}
-						disabled={googleLoading}
-						class="px-3 py-1.5 rounded-lg text-xs font-medium bg-error-500/15 text-error-400
-						hover:bg-error-500/25 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-					>
-						{googleLoading ? '…' : '🚫 Revoke Token'}
-					</button>
-				{/if}
-			</div>
-
-			{#if !googleCredsExist}
-				<p class="text-xs text-warning-400">
-					⚠️ <span class="font-mono">creds/client_google_api_calendar.json</span> not found —
-					place your Google OAuth credentials file there first.
-				</p>
-			{/if}
-
-			{#if googleMsg}
-				<div class="text-xs px-3 py-2 rounded-lg
-					{googleMsg.ok ? 'bg-success-500/10 text-success-500' : 'bg-error-500/10 text-error-400'}">
-					{googleMsg.text}
-				</div>
-			{/if}
-
+			<p class="text-xs text-surface-400-600">
+				To change account or calendar, use the
+				<a href="/config" class="text-primary-400 hover:underline">Configuration page</a>.
+			</p>
 		</div>
 	</div>
 
-	<!-- ── Software Update (Phase 5) ──────────────────────────────────── -->
+	<!-- ── Software Update (Phase 5) ────────────────────────────────────────── -->
 	<div class="card bg-surface-50-950 border border-surface-200-800 rounded-xl overflow-hidden">
 		<div class="px-5 py-3.5 border-b border-surface-200-800 flex items-center gap-2">
 			<span>🔄</span>
