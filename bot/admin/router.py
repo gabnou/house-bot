@@ -311,6 +311,124 @@ async def ollama_switch(req: SwitchModelRequest):
     return JSONResponse(content={"ok": True, "model": model})
 
 
+# ── Ollama Model Catalog ─────────────────────────────────────────────────────
+
+_OLLAMA_STATIC_CATALOG = [
+    {"id": "llama3.2:1b",          "family": "Meta",        "description": "Llama 3.2 1B — ultra-fast, great for low-RAM machines",     "ram": "~1 GB"},
+    {"id": "llama3.2:3b",          "family": "Meta",        "description": "Llama 3.2 3B — small, fast and capable",                    "ram": "~2 GB"},
+    {"id": "llama3.1:8b",          "family": "Meta",        "description": "Llama 3.1 8B — great general-purpose model",                "ram": "~5 GB"},
+    {"id": "llama3.1:70b",         "family": "Meta",        "description": "Llama 3.1 70B — high quality, large",                       "ram": "~40 GB"},
+    {"id": "llama3:8b",            "family": "Meta",        "description": "Llama 3 8B",                                                "ram": "~5 GB"},
+    {"id": "llama3:70b",           "family": "Meta",        "description": "Llama 3 70B",                                               "ram": "~40 GB"},
+    {"id": "llama2:7b",            "family": "Meta",        "description": "Llama 2 7B",                                                "ram": "~4 GB"},
+    {"id": "llama2:13b",           "family": "Meta",        "description": "Llama 2 13B",                                               "ram": "~8 GB"},
+    {"id": "gemma3:1b",            "family": "Google",      "description": "Gemma 3 1B — Google's efficient small model",               "ram": "~2 GB"},
+    {"id": "gemma3:4b",            "family": "Google",      "description": "Gemma 3 4B",                                                "ram": "~4 GB"},
+    {"id": "gemma3:12b",           "family": "Google",      "description": "Gemma 3 12B",                                               "ram": "~12 GB"},
+    {"id": "gemma3:27b",           "family": "Google",      "description": "Gemma 3 27B",                                               "ram": "~24 GB"},
+    {"id": "gemma2:2b",            "family": "Google",      "description": "Gemma 2 2B",                                                "ram": "~2 GB"},
+    {"id": "gemma2:9b",            "family": "Google",      "description": "Gemma 2 9B",                                                "ram": "~6 GB"},
+    {"id": "gemma2:27b",           "family": "Google",      "description": "Gemma 2 27B",                                               "ram": "~20 GB"},
+    {"id": "mistral:7b",           "family": "Mistral",     "description": "Mistral 7B — fast and highly capable",                     "ram": "~4 GB"},
+    {"id": "mistral-small:22b",    "family": "Mistral",     "description": "Mistral Small 22B",                                        "ram": "~16 GB"},
+    {"id": "mixtral:8x7b",         "family": "Mistral",     "description": "Mixtral 8x7B Mixture-of-Experts",                          "ram": "~26 GB"},
+    {"id": "phi4:14b",             "family": "Microsoft",   "description": "Phi-4 14B — Microsoft's latest small language model",      "ram": "~10 GB"},
+    {"id": "phi4-mini:3.8b",       "family": "Microsoft",   "description": "Phi-4 Mini 3.8B",                                         "ram": "~3 GB"},
+    {"id": "phi3.5:3.8b",          "family": "Microsoft",   "description": "Phi-3.5 Mini 3.8B",                                       "ram": "~3 GB"},
+    {"id": "phi3:3.8b",            "family": "Microsoft",   "description": "Phi-3 Mini 3.8B",                                         "ram": "~2.5 GB"},
+    {"id": "phi3:14b",             "family": "Microsoft",   "description": "Phi-3 Medium 14B",                                        "ram": "~9 GB"},
+    {"id": "qwen2.5:0.5b",         "family": "Alibaba",     "description": "Qwen 2.5 0.5B — ultra-lightweight",                        "ram": "~0.5 GB"},
+    {"id": "qwen2.5:1.5b",         "family": "Alibaba",     "description": "Qwen 2.5 1.5B",                                            "ram": "~1 GB"},
+    {"id": "qwen2.5:3b",           "family": "Alibaba",     "description": "Qwen 2.5 3B",                                              "ram": "~2 GB"},
+    {"id": "qwen2.5:7b",           "family": "Alibaba",     "description": "Qwen 2.5 7B",                                              "ram": "~5 GB"},
+    {"id": "qwen2.5:14b",          "family": "Alibaba",     "description": "Qwen 2.5 14B",                                             "ram": "~10 GB"},
+    {"id": "qwen2.5:32b",          "family": "Alibaba",     "description": "Qwen 2.5 32B",                                             "ram": "~20 GB"},
+    {"id": "qwen2.5:72b",          "family": "Alibaba",     "description": "Qwen 2.5 72B",                                             "ram": "~45 GB"},
+    {"id": "qwen2:7b",             "family": "Alibaba",     "description": "Qwen 2 7B",                                                "ram": "~5 GB"},
+    {"id": "qwen2:72b",            "family": "Alibaba",     "description": "Qwen 2 72B",                                               "ram": "~43 GB"},
+    {"id": "deepseek-r1:1.5b",     "family": "DeepSeek",    "description": "DeepSeek-R1 1.5B — reasoning model",                      "ram": "~1 GB"},
+    {"id": "deepseek-r1:7b",       "family": "DeepSeek",    "description": "DeepSeek-R1 7B",                                           "ram": "~5 GB"},
+    {"id": "deepseek-r1:8b",       "family": "DeepSeek",    "description": "DeepSeek-R1 8B",                                           "ram": "~5 GB"},
+    {"id": "deepseek-r1:14b",      "family": "DeepSeek",    "description": "DeepSeek-R1 14B",                                          "ram": "~9 GB"},
+    {"id": "deepseek-r1:32b",      "family": "DeepSeek",    "description": "DeepSeek-R1 32B",                                          "ram": "~20 GB"},
+    {"id": "deepseek-r1:70b",      "family": "DeepSeek",    "description": "DeepSeek-R1 70B",                                          "ram": "~43 GB"},
+    {"id": "codellama:7b",         "family": "Meta",        "description": "Code Llama 7B — coding specialist",                        "ram": "~4 GB"},
+    {"id": "codellama:13b",        "family": "Meta",        "description": "Code Llama 13B",                                           "ram": "~8 GB"},
+    {"id": "codellama:34b",        "family": "Meta",        "description": "Code Llama 34B",                                           "ram": "~20 GB"},
+    {"id": "starcoder2:3b",        "family": "BigCode",     "description": "StarCoder2 3B — code generation",                          "ram": "~2 GB"},
+    {"id": "starcoder2:7b",        "family": "BigCode",     "description": "StarCoder2 7B",                                            "ram": "~4 GB"},
+    {"id": "starcoder2:15b",       "family": "BigCode",     "description": "StarCoder2 15B",                                           "ram": "~9 GB"},
+    {"id": "nomic-embed-text",     "family": "Nomic",       "description": "Nomic Embed Text — text embeddings",                       "ram": "~0.3 GB"},
+    {"id": "mxbai-embed-large",    "family": "MixedBread",  "description": "MixBread Embed Large — high-quality embeddings",           "ram": "~0.7 GB"},
+    {"id": "command-r:35b",        "family": "Cohere",      "description": "Command-R 35B — RAG-optimised model",                     "ram": "~21 GB"},
+    {"id": "vicuna:7b",            "family": "LMSYS",       "description": "Vicuna 7B — instruction-tuned",                            "ram": "~4 GB"},
+    {"id": "vicuna:13b",           "family": "LMSYS",       "description": "Vicuna 13B",                                               "ram": "~8 GB"},
+    {"id": "zephyr:7b",            "family": "HuggingFace", "description": "Zephyr 7B — aligned RLHF assistant",                       "ram": "~4 GB"},
+    {"id": "solar:10.7b",          "family": "Upstage",     "description": "Solar 10.7B",                                              "ram": "~7 GB"},
+    {"id": "tinyllama:1.1b",       "family": "TinyLlama",   "description": "TinyLlama 1.1B — very lightweight",                        "ram": "~0.7 GB"},
+    {"id": "stablelm2:1.6b",       "family": "Stability",   "description": "StableLM 2 1.6B",                                         "ram": "~1 GB"},
+    {"id": "neural-chat:7b",       "family": "Intel",       "description": "Neural Chat 7B by Intel",                                  "ram": "~4 GB"},
+    {"id": "openhermes:7b",        "family": "NousResearch","description": "OpenHermes 2.5 7B",                                        "ram": "~4 GB"},
+    {"id": "orca-mini:3b",         "family": "Orca",        "description": "Orca Mini 3B",                                             "ram": "~2 GB"},
+    {"id": "orca-mini:7b",         "family": "Orca",        "description": "Orca Mini 7B",                                             "ram": "~4 GB"},
+]
+
+
+@router.get("/ollama/catalog")
+async def ollama_catalog(q: str = ""):
+    """Return the Ollama model catalog (static list), pre-filtered to exclude installed models."""
+    import requests as _req
+
+    base = _ollama_base()
+    try:
+        r = _req.get(f"{base}/api/tags", timeout=5)
+        r.raise_for_status()
+        installed_names = {m["name"] for m in r.json().get("models", [])}
+        # Also match base name (e.g. "llama3.2" matches "llama3.2:3b" installed as "llama3.2:3b")
+        installed_base = {n.split(":")[0] for n in installed_names}
+    except Exception:
+        installed_names = set()
+        installed_base = set()
+
+    q_lower = q.strip().lower()
+    catalog = []
+    for m in _OLLAMA_STATIC_CATALOG:
+        if m["id"] in installed_names:
+            continue
+        if q_lower and q_lower not in m["id"].lower() and q_lower not in m["family"].lower() and q_lower not in m["description"].lower():
+            continue
+        catalog.append(m)
+
+    return JSONResponse(content={"catalog": catalog, "installed": list(installed_names)})
+
+
+class DeleteModelRequest(BaseModel):
+    model: str
+
+
+@router.delete("/ollama/models")
+async def ollama_delete_model(req: DeleteModelRequest):
+    """Delete a locally pulled Ollama model via the Ollama API."""
+    import requests as _req
+
+    model = req.model.strip()
+    if not model:
+        raise HTTPException(status_code=400, detail="model name is required")
+
+    base = _ollama_base()
+    try:
+        r = _req.delete(f"{base}/api/delete", json={"name": model}, timeout=15)
+        if r.status_code == 404:
+            raise HTTPException(status_code=404, detail=f"Model '{model}' not found locally")
+        r.raise_for_status()
+        logger.info("🗑️  Model deleted: %s", model)
+        return JSONResponse(content={"ok": True, "model": model})
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Ollama unreachable: {e}")
+
+
 # ── Service Control ─────────────────────────────────────────────────────────
 
 _VENV_PYTHON = str(_PROJECT_ROOT / ".venv" / "bin" / "python")
@@ -554,6 +672,31 @@ async def install_ollama_pull(req: PullModelRequest):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router.post("/install/ollama/pull/cancel")
+async def install_ollama_pull_cancel(req: PullModelRequest):
+    """
+    Cancel an in-flight model pull and delete any partial blobs from Ollama's cache.
+    The client is responsible for aborting the SSE fetch; this endpoint cleans up.
+    """
+    import requests as _req
+
+    model = req.model.strip()
+    if not model:
+        raise HTTPException(status_code=400, detail="model is required")
+
+    base = _ollama_base()
+    try:
+        r = _req.delete(f"{base}/api/delete", json={"name": model}, timeout=15)
+        # 404 means nothing was cached yet — treat as success
+        if r.status_code not in (200, 404):
+            r.raise_for_status()
+    except Exception as e:
+        logger.warning("⚠️  Could not clean up partial pull for %s: %s", model, e)
+
+    logger.info("🚫 Pull cancelled and cleaned up: %s", model)
+    return JSONResponse(content={"ok": True, "model": model})
 
 
 @router.post("/install/ollama/chat")

@@ -1,19 +1,14 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 
-	// ── Model catalog ───────────────────────────────────────────────────────
-	const MODEL_CATALOG = [
-		{ id: 'gemma3:1b',         name: 'Gemma 3 1B',        ram: '2 GB',   family: 'Google' },
-		{ id: 'gemma3:4b',         name: 'Gemma 3 4B',        ram: '4 GB',   family: 'Google' },
-		{ id: 'gemma3:12b',        name: 'Gemma 3 12B',       ram: '12 GB',  family: 'Google' },
-		{ id: 'gemma3:27b',        name: 'Gemma 3 27B',       ram: '24 GB+', family: 'Google' },
-		{ id: 'llama3.1:8b',       name: 'Llama 3.1 8B',      ram: '8 GB',   family: 'Meta' },
-		{ id: 'mistral-small:22b', name: 'Mistral Small 22B', ram: '16 GB',  family: 'Mistral' },
-	];
+	// ── Types ────────────────────────────────────────────────────────────────
+	type InstalledModelDetail = { name: string; size_gb: number; family: string; params: string };
+	type CatalogModel = { id: string; family: string; description: string; ram: string };
 
 	// ── Step 1 state ────────────────────────────────────────────────────────────
 	let step1Open = $state(false);
 	let installedModels = $state<string[]>([]);
+	let installedModelDetails = $state<InstalledModelDetail[]>([]);
 	let configuredModel = $state('');
 	let modelsLoading = $state(false);
 	let modelsChecked = $state(false);
@@ -22,6 +17,23 @@
 	let pullProgress = $state<{ completed: number; total: number } | null>(null);
 	let pullDone = $state(false);
 	let pullError = $state<string | null>(null);
+
+	// Model catalog (combobox)
+	let catalog = $state<CatalogModel[]>([]);
+	let catalogLoading = $state(false);
+	let catalogQuery = $state('');
+	let catalogOpen = $state(false);
+	let selectedCatalogModel = $state<CatalogModel | null>(null);
+	let comboboxEl = $state<HTMLDivElement | null>(null);
+
+	// Model pull cancel
+	let pullAbortController = $state<AbortController | null>(null);
+	let pullCancelling = $state(false);
+
+	// Model deletion
+	let deletingModel = $state<string | null>(null);
+	let pendingDeleteModel = $state<string | null>(null);
+	let deleteError = $state<string | null>(null);
 
 	let chatModel = $state('');
 	let chatMessage = $state('');
@@ -145,6 +157,9 @@
 		if (step1Open && installedModels.length === 0 && !modelsLoading) {
 			await loadInstalledModels();
 		}
+		if (step1Open && catalog.length === 0 && !catalogLoading) {
+			await loadCatalog();
+		}
 		if (step1Open && !keepAliveValue) {
 			await loadKeepAlive();
 		}
@@ -159,7 +174,9 @@
 			const res = await fetch('/admin/api/ollama/models');
 			if (res.ok) {
 				const data = await res.json();
-				installedModels = (data.models ?? []).map((m: { name: string }) => m.name);
+				const raw = (data.models ?? []) as InstalledModelDetail[];
+				installedModelDetails = raw;
+				installedModels = raw.map(m => m.name);
 				configuredModel = data.configured ?? '';
 				if (!chatModel && installedModels.length > 0) chatModel = installedModels[0];
 			}
@@ -177,11 +194,15 @@
 		pullProgress = null;
 		pullDone = false;
 		pullError = null;
+		pullCancelling = false;
+		const controller = new AbortController();
+		pullAbortController = controller;
 		try {
 			const res = await fetch('/admin/api/install/ollama/pull', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ model: modelId }),
+				signal: controller.signal,
 			});
 			if (!res.body) throw new Error('No response body');
 			const reader = res.body.getReader();
@@ -208,11 +229,115 @@
 					} catch { /* skip malformed line */ }
 				}
 			}
-			if (!pullError) { pullDone = true; await loadInstalledModels(); chatModel = modelId; }
+			if (!pullCancelling && !pullError) {
+				pullDone = true;
+				await loadInstalledModels();
+				await loadCatalog();
+				chatModel = modelId;
+				selectedCatalogModel = null;
+				catalogQuery = '';
+			}
 		} catch (e) {
-			pullError = e instanceof Error ? e.message : String(e);
+			if (!pullCancelling) pullError = e instanceof Error ? e.message : String(e);
 		} finally {
 			pullingModel = null;
+			pullAbortController = null;
+		}
+	}
+
+	async function cancelPull() {
+		if (!pullingModel) return;
+		const modelToCancel = pullingModel;
+		pullCancelling = true;
+		pullStatus = 'Cancelling…';
+		pullAbortController?.abort();
+		pullAbortController = null;
+		// Ask the server to delete any partial blobs from Ollama's cache
+		try {
+			await fetch('/admin/api/install/ollama/pull/cancel', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ model: modelToCancel }),
+			});
+		} catch { /* non-fatal */ }
+		pullingModel = null;
+		pullProgress = null;
+		pullStatus = '';
+		await loadCatalog();
+		setTimeout(() => { pullCancelling = false; }, 100);
+	}
+
+	// ── Catalog helpers ───────────────────────────────────────────────────────
+	async function loadCatalog() {
+		catalogLoading = true;
+		try {
+			const res = await fetch('/admin/api/ollama/catalog');
+			if (res.ok) catalog = (await res.json()).catalog ?? [];
+		} catch { /* non-fatal */ } finally {
+			catalogLoading = false;
+		}
+	}
+
+	const filteredCatalog = $derived(
+		catalog
+			.filter(m => {
+				if (!catalogQuery.trim()) return true;
+				const q = catalogQuery.toLowerCase();
+				return m.id.toLowerCase().includes(q) || m.family.toLowerCase().includes(q) || m.description.toLowerCase().includes(q);
+			})
+			.slice(0, 25)
+	);
+
+	function onCatalogInput() {
+		if (selectedCatalogModel && selectedCatalogModel.id !== catalogQuery) selectedCatalogModel = null;
+		catalogOpen = true;
+	}
+
+	function onCatalogFocus() { catalogOpen = true; }
+
+	function selectCatalogModel(item: CatalogModel) {
+		selectedCatalogModel = item;
+		catalogQuery = item.id;
+		catalogOpen = false;
+	}
+
+	function clearCatalogSelection() {
+		selectedCatalogModel = null;
+		catalogQuery = '';
+		catalogOpen = false;
+	}
+
+	$effect(() => {
+		function handleClickOutside(e: MouseEvent) {
+			if (comboboxEl && !comboboxEl.contains(e.target as Node)) catalogOpen = false;
+		}
+		document.addEventListener('mousedown', handleClickOutside);
+		return () => document.removeEventListener('mousedown', handleClickOutside);
+	});
+
+	// ── Model deletion ────────────────────────────────────────────────────────
+	async function deleteModel(name: string) {
+		deletingModel = name;
+		pendingDeleteModel = null;
+		deleteError = null;
+		try {
+			const res = await fetch('/admin/api/ollama/models', {
+				method: 'DELETE',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ model: name }),
+			});
+			if (res.ok) {
+				await loadInstalledModels();
+				await loadCatalog();
+				if (chatModel === name) chatModel = installedModels[0] ?? '';
+			} else {
+				const err = await res.json().catch(() => ({}));
+				deleteError = err.detail ?? `HTTP ${res.status}`;
+			}
+		} catch (e) {
+			deleteError = e instanceof Error ? e.message : String(e);
+		} finally {
+			deletingModel = null;
 		}
 	}
 
@@ -384,6 +509,7 @@
 	// ── Eager status load on mount ───────────────────────────────────────────────
 	$effect(() => {
 		loadInstalledModels();
+		loadCatalog();
 		loadGoogleStatus();
 		// Silently check bridge so Step 3 header badge shows correct status without opening the panel
 		loadWaQr();
@@ -788,84 +914,187 @@
 			{#if step1Open}
 				<div class="border-t border-surface-200-800 p-4 space-y-5">
 
-					{#if modelsLoading}
-						<p class="text-xs text-surface-400-600">Checking installed models…</p>
-					{/if}
-
-					<!-- Model rows -->
+					<!-- ── Installed models ─────────────────────────────────────────── -->
 					<div class="space-y-2">
-						{#each MODEL_CATALOG as model}
-							{@const isInstalled = installedModels.includes(model.id)}
-							{@const isConfigured = configuredModel === model.id}
-							{@const isPulling = pullingModel === model.id}
+						<p class="text-xs font-semibold text-surface-400-600 uppercase tracking-wide">Installed models</p>
+
+						{#if modelsLoading}
+							<p class="text-xs text-surface-400-600">Checking installed models…</p>
+						{:else if installedModelDetails.length === 0 && modelsChecked}
+							<p class="text-xs text-surface-400-600">No models installed yet. Pull one below.</p>
+						{/if}
+
+						{#each installedModelDetails as model}
+							{@const isLoaded = configuredModel === model.name}
+							{@const isDeleting = deletingModel === model.name}
+							{@const isPendingDelete = pendingDeleteModel === model.name}
 							<div class="flex items-center gap-3 p-3 rounded-lg border border-surface-200-800 bg-surface-100-900/40">
 								<div class="flex-1 min-w-0">
 									<div class="flex items-center gap-2 flex-wrap">
-										<span class="text-xs font-semibold">{model.name}</span>
-										<span class="text-xs text-surface-400-600 font-mono">{model.id}</span>
-										{#if isConfigured && isInstalled}
-											<span class="px-1.5 py-0.5 rounded text-xs bg-primary-500/15 text-primary-400">loaded</span>
-										{:else if isInstalled}
+										<span class="text-xs font-mono font-semibold">{model.name}</span>
+										{#if isLoaded}
+											<span class="px-1.5 py-0.5 rounded text-xs bg-primary-500/15 text-primary-400">active</span>
+										{:else}
 											<span class="px-1.5 py-0.5 rounded text-xs bg-success-500/15 text-success-400">installed</span>
 										{/if}
 									</div>
-									<p class="text-xs text-surface-400-600 mt-0.5">{model.ram} RAM required · {model.family}</p>
-									<!-- Inline pull progress -->
-									{#if isPulling}
-										<div class="mt-2 space-y-1">
-											<p class="text-xs text-primary-400">{pullStatus}</p>
-											{#if pullProgress && pullProgress.total > 0}
-												<div class="w-full h-1.5 bg-surface-200-800 rounded-full overflow-hidden">
-													<div
-														class="h-full bg-primary-500 rounded-full transition-all duration-300"
-														style="width: {Math.round((pullProgress.completed / pullProgress.total) * 100)}%"
-													></div>
-												</div>
-												<p class="text-xs text-surface-400-600">
-													{(pullProgress.completed / 1e9).toFixed(2)} / {(pullProgress.total / 1e9).toFixed(2)} GB
-												</p>
-											{/if}
-										</div>
+									<p class="text-xs text-surface-400-600 mt-0.5">
+										{model.params || model.family || ''}
+										{#if model.size_gb > 0} · {model.size_gb} GB on disk{/if}
+									</p>
+								</div>
+								<!-- Delete controls -->
+								{#if isPendingDelete}
+									<div class="flex items-center gap-2 shrink-0">
+										<span class="text-xs text-error-400">Delete?</span>
+										<button
+											onclick={() => deleteModel(model.name)}
+											disabled={isDeleting}
+											class="px-2 py-1 rounded text-xs font-medium bg-error-500/20 text-error-400
+											hover:bg-error-500/30 border border-error-500/40 transition-colors disabled:opacity-40"
+										>Yes</button>
+										<button
+											onclick={() => pendingDeleteModel = null}
+											class="px-2 py-1 rounded text-xs font-medium border border-surface-300-700
+											text-surface-500-500 hover:bg-surface-100-900 transition-colors"
+										>No</button>
+									</div>
+								{:else}
+									<button
+										onclick={() => pendingDeleteModel = model.name}
+										disabled={isDeleting || !!deletingModel}
+										title="Remove model from local disk"
+										class="shrink-0 px-2 py-1.5 rounded-lg text-xs font-medium border border-surface-300-700
+										text-surface-500-500 hover:border-error-500/40 hover:text-error-400 hover:bg-error-500/5
+										transition-colors disabled:opacity-40"
+									>
+										{isDeleting ? '…' : '🗑'}
+									</button>
+								{/if}
+							</div>
+						{/each}
+
+						{#if deleteError}
+							<p class="text-xs text-error-400">❌ {deleteError}</p>
+						{/if}
+					</div>
+
+					<!-- ── Install new model ─────────────────────────────────────────── -->
+					<div class="space-y-3 pt-3 border-t border-surface-200-800">
+						<p class="text-xs font-semibold text-surface-400-600 uppercase tracking-wide">Install a new model</p>
+
+						<div class="relative" bind:this={comboboxEl}>
+							<div class="flex gap-2">
+								<div class="relative flex-1">
+									<input
+										type="text"
+										bind:value={catalogQuery}
+										oninput={onCatalogInput}
+										onfocus={onCatalogFocus}
+										placeholder={catalogLoading ? 'Loading catalog…' : 'Search models (e.g. llama, gemma, phi)…'}
+										disabled={!!pullingModel}
+										class="w-full text-xs rounded-lg px-3 py-2 bg-surface-100-900 border border-surface-200-800
+										text-surface-900-50 placeholder:text-surface-400-600
+										focus:outline-none focus:border-primary-500/60 disabled:opacity-60"
+									/>
+									{#if catalogQuery}
+										<button
+											onclick={clearCatalogSelection}
+											class="absolute right-2 top-1/2 -translate-y-1/2 text-surface-400-600
+											hover:text-surface-900-50 text-xs leading-none"
+											aria-label="Clear"
+										>✕</button>
 									{/if}
 								</div>
 								<button
-									onclick={() => pullModel(model.id)}
-									disabled={!!pullingModel}
-									class="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors disabled:opacity-40
-										{isInstalled
-											? 'border-success-500/40 text-success-400 hover:bg-success-500/10'
-											: 'border-primary-500/40 text-primary-400 hover:bg-primary-500/10'}"
+									onclick={() => selectedCatalogModel && pullModel(selectedCatalogModel.id)}
+									disabled={!selectedCatalogModel || !!pullingModel}
+									class="shrink-0 px-4 py-2 rounded-lg text-xs font-semibold border transition-colors disabled:opacity-40
+									border-primary-500/40 text-primary-400 hover:bg-primary-500/10 disabled:cursor-not-allowed"
 								>
-									{isPulling ? 'Pulling…' : isInstalled ? 'Re-pull' : 'Pull'}
+									{pullingModel && selectedCatalogModel?.id === pullingModel ? 'Pulling…' : 'Pull'}
 								</button>
 							</div>
-						{/each}
+
+							<!-- Dropdown -->
+							{#if catalogOpen && filteredCatalog.length > 0}
+								<div class="absolute z-50 top-full left-0 right-0 mt-1 max-h-64 overflow-y-auto
+								bg-surface-50-950 border border-surface-200-800 rounded-lg shadow-2xl">
+									{#each filteredCatalog as item}
+										<button
+											onclick={() => selectCatalogModel(item)}
+											class="w-full text-left px-3 py-2 hover:bg-surface-100-900 transition-colors
+											{selectedCatalogModel?.id === item.id ? 'bg-primary-500/10' : ''}"
+										>
+											<div class="flex items-center gap-2">
+												<span class="text-xs font-mono font-semibold">{item.id}</span>
+												<span class="text-xs text-surface-400-600">{item.ram}</span>
+												<span class="text-xs text-surface-400-600 ml-auto">{item.family}</span>
+											</div>
+											<p class="text-[10px] text-surface-400-600 mt-0.5">{item.description}</p>
+										</button>
+									{/each}
+								</div>
+							{:else if catalogOpen && catalogQuery.trim() && filteredCatalog.length === 0}
+								<div class="absolute z-50 top-full left-0 right-0 mt-1 px-3 py-2
+								bg-surface-50-950 border border-surface-200-800 rounded-lg shadow-2xl">
+									<p class="text-xs text-surface-400-600">No matches — try a different name or
+										<a href="https://ollama.com/library" target="_blank" rel="noopener noreferrer"
+											class="text-primary-400 hover:underline">browse the full library →</a>
+									</p>
+								</div>
+							{/if}
+						</div>
+
+						<!-- Pull-in-progress for catalog selection -->
+						{#if pullingModel && selectedCatalogModel?.id === pullingModel}
+							<div class="space-y-2">
+								<div class="flex items-center justify-between gap-3">
+									<p class="text-xs text-primary-400">{pullStatus}</p>
+									{#if !pullCancelling}
+										<button
+											onclick={cancelPull}
+											class="shrink-0 px-2.5 py-1 rounded-lg text-xs font-medium border border-error-500/40
+											text-error-400 hover:bg-error-500/10 transition-colors"
+										>Cancel</button>
+									{:else}
+										<span class="text-xs text-warning-400">Cleaning up…</span>
+									{/if}
+								</div>
+								{#if pullProgress && pullProgress.total > 0}
+									<div class="w-full h-1.5 bg-surface-200-800 rounded-full overflow-hidden">
+										<div
+											class="h-full bg-primary-500 rounded-full transition-all duration-300"
+											style="width: {Math.round((pullProgress.completed / pullProgress.total) * 100)}%"
+										></div>
+									</div>
+									<p class="text-xs text-surface-400-600">
+										{(pullProgress.completed / 1e9).toFixed(2)} / {(pullProgress.total / 1e9).toFixed(2)} GB
+									</p>
+								{/if}
+							</div>
+						{/if}
+
+						<!-- Result banners -->
+						{#if pullDone && !pullingModel}
+							<div class="flex items-center gap-2 px-3 py-2 rounded-lg bg-success-500/10 border border-success-500/30">
+								<span>✅</span>
+								<p class="text-xs text-success-400">Model pulled successfully — you can test it below.</p>
+							</div>
+						{/if}
+						{#if pullError && !pullingModel}
+							<div class="flex items-center gap-2 px-3 py-2 rounded-lg bg-error-500/10 border border-error-500/30">
+								<span>❌</span>
+								<p class="text-xs text-error-400">{pullError}</p>
+							</div>
+						{/if}
+
+						<p class="text-xs text-surface-400-600">
+							Not finding what you need?
+							<a href="https://ollama.com/library" target="_blank" rel="noopener noreferrer"
+								class="text-primary-400 hover:underline">Browse the full Ollama library →</a>
+						</p>
 					</div>
-
-					<!-- Result banners -->
-					{#if pullDone && !pullingModel}
-						<div class="flex items-center gap-2 px-3 py-2 rounded-lg bg-success-500/10 border border-success-500/30">
-							<span>✅</span>
-							<p class="text-xs text-success-400">Model pulled successfully — you can test it below.</p>
-						</div>
-					{/if}
-					{#if pullError && !pullingModel}
-						<div class="flex items-center gap-2 px-3 py-2 rounded-lg bg-error-500/10 border border-error-500/30">
-							<span>❌</span>
-							<p class="text-xs text-error-400">{pullError}</p>
-						</div>
-					{/if}
-
-					<!-- More models link -->
-					<p class="text-xs text-surface-400-600">
-						Looking for a different model?
-						<a
-							href="https://ollama.com/library"
-							target="_blank"
-							rel="noopener noreferrer"
-							class="text-primary-400 hover:underline"
-						>Browse all models on ollama.com →</a>
-					</p>
 
 					<!-- Keep-alive setting -->
 					<div class="space-y-3 pt-3 border-t border-surface-200-800">

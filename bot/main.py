@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 # Third-party and local imports
 from fastapi import FastAPI, UploadFile, File
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 from faster_whisper import WhisperModel
@@ -277,5 +278,14 @@ async def handle_message(msg: Message):
 # registered after it, returning 405 for POST endpoints.
 _UI_BUILD = Path(__file__).parent.parent / "ui" / "build"
 if _UI_BUILD.exists():
+    # Catch-all: serve index.html for any path not matched by the API so that
+    # SvelteKit client-side routing works on direct navigation (e.g. /install).
+    # This route must come BEFORE the StaticFiles mount.
+    _index_html = str(_UI_BUILD / "index.html")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(full_path: str):
+        return FileResponse(_index_html)
+
     app.mount("/", StaticFiles(directory=str(_UI_BUILD), html=True), name="ui")
     logger.info("🖥️  Admin UI served from %s", _UI_BUILD)

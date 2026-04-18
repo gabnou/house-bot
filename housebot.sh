@@ -205,6 +205,13 @@ stop() {
 
     stop_watchdog
 
+    # Stop UI dev server if it was launched separately
+    if [ -f "$LOG_DIR/ui.pid" ] && kill -0 $(cat "$LOG_DIR/ui.pid") 2>/dev/null; then
+        kill $(cat "$LOG_DIR/ui.pid") 2>/dev/null
+        rm -f "$LOG_DIR/ui.pid"
+        echo "✅ UI dev server stopped"
+    fi
+
     echo ""
     echo "💤 HouseBot stopped (Ollama unchanged)."
 }

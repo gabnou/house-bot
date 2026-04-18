@@ -27,7 +27,7 @@
 
 	<!-- Welcome -->
 	<div class="flex items-center gap-8 pt-2 pb-4">
-		<img src={isDark ? '/housebot_logo_v2_small_dark.png' : '/housebot_logo_v2_small.png'} alt="HouseBot" class="h-50 w-auto shrink-0" />
+		<img src={isDark ? '/housebot_logo_v2_dark_small.png' : '/housebot_logo_v2_small.png'} alt="HouseBot" class="h-50 w-auto shrink-0" />
 		<div class="flex-1 flex flex-col gap-4">
 			<p class="text-lg text-gray-500 dark:text-gray-400 leading-relaxed">
 				Domestic WhatsApp bot — shopping list, weather, and Google Calendar.
