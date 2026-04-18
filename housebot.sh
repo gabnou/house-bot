@@ -75,6 +75,12 @@ start() {
 
     rotate_logs
 
+    # Build the Control Panel UI only if the production bundle is absent (e.g. fresh clone).
+    # Run './housebot.sh ui-build' explicitly after pulling UI source changes.
+    if [ ! -d "$PROJECT_DIR/ui/build" ]; then
+        ui_build
+    fi
+
     # Check that Ollama is reachable
     if ! curl -s http://localhost:11434 > /dev/null 2>&1; then
         echo "❌ Ollama is not running. Start it manually with: ollama serve"
@@ -292,17 +298,15 @@ qr() {
 }
 
 ui_build() {
-    echo "🔨 Building UI..."
+    echo "🔨 Building Control Panel UI..."
     if [ ! -d "$PROJECT_DIR/ui/node_modules" ]; then
         echo "📦 Installing UI dependencies..."
-        (cd "$PROJECT_DIR/ui" && npm install)
+        (cd "$PROJECT_DIR/ui" && npm install --silent 2>&1 | tail -1)
     fi
-    (cd "$PROJECT_DIR/ui" && npm run build)
-    if [ $? -eq 0 ]; then
-        echo "✅ UI built successfully → ui/build/"
-        echo "   FastAPI will serve it at http://localhost:8000/"
+    if (cd "$PROJECT_DIR/ui" && npm run build --silent > /dev/null 2>&1); then
+        echo "✅ Control Panel UI built → ui/build/"
     else
-        echo "❌ UI build failed"
+        echo "❌ UI build failed — check: cd ui && npm run build"
         exit 1
     fi
 }
