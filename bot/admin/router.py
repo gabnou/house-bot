@@ -80,18 +80,19 @@ def _google_token_status() -> dict:
         from google.auth.transport.requests import Request
         creds = Credentials.from_authorized_user_file(str(_TOKEN_PATH), _GOOGLE_SCOPES)
         expiry = creds.expiry.isoformat() if creds.expiry else None
+        configured = os.getenv("GOOGLE_CALENDAR_NAME", "")
         if creds.valid:
-            return {"status": "valid", "expiry": expiry}
+            return {"status": "valid", "expiry": expiry, "configured_calendar": configured}
         if creds.expired and creds.refresh_token:
             # Silently refresh — same path as calendar_handler.get_service()
             creds.refresh(Request())
             _TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
             expiry = creds.expiry.isoformat() if creds.expiry else None
             logger.debug("🔄 Google token auto-refreshed on status check")
-            return {"status": "valid", "expiry": expiry}
+            return {"status": "valid", "expiry": expiry, "configured_calendar": configured}
         if creds.expired:
-            return {"status": "expired", "expiry": expiry, "has_refresh": False}
-        return {"status": "invalid", "expiry": expiry}
+            return {"status": "expired", "expiry": expiry, "has_refresh": False, "configured_calendar": configured}
+        return {"status": "invalid", "expiry": expiry, "configured_calendar": configured}
     except Exception as exc:
         return {"status": "invalid", "error": str(exc)}
 
@@ -263,6 +264,59 @@ async def ollama_active():
         raise HTTPException(status_code=502, detail=f"Ollama unreachable: {e}")
 
 
+@router.get("/ollama/status")
+async def ollama_status():
+    """Lightweight Ollama health check: reachability + active/configured model."""
+    import requests as _req
+    base = _ollama_base()
+    up = False
+    try:
+        r = _req.get(f"{base}/api/tags", timeout=3)
+        up = r.status_code == 200
+    except Exception:
+        pass
+
+    active_model = None
+    if up:
+        try:
+            r2 = _req.get(f"{base}/api/ps", timeout=3)
+            models = r2.json().get("models", [])
+            active_model = models[0]["name"] if models else None
+        except Exception:
+            pass
+
+    return JSONResponse(content={
+        "up": up,
+        "active_model": active_model,
+        "configured_model": os.getenv("OLLAMA_MODEL", ""),
+    })
+
+
+@router.post("/ollama/restart")
+async def ollama_restart():
+    """Restart the Ollama service (macOS: brew services or pkill + open)."""
+    import time as _time
+
+    def _do_restart():
+        # Try brew services restart first (works for brew-installed Ollama)
+        result = subprocess.run(
+            ["brew", "services", "restart", "ollama"],
+            capture_output=True, timeout=15
+        )
+        if result.returncode != 0:
+            # Fallback: kill process and relaunch as macOS app
+            subprocess.run(["pkill", "-ix", "ollama"], capture_output=True)
+            _time.sleep(1.5)
+            subprocess.Popen(
+                ["open", "-ga", "Ollama"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+
+    threading.Thread(target=_do_restart, daemon=True).start()
+    logger.info("🔄 Ollama restart initiated")
+    return JSONResponse(content={"ok": True, "message": "Ollama restart initiated"})
+
+
 class SwitchModelRequest(BaseModel):
     model: str
 
@@ -322,6 +376,10 @@ _OLLAMA_STATIC_CATALOG = [
     {"id": "llama3:70b",           "family": "Meta",        "description": "Llama 3 70B",                                               "ram": "~40 GB"},
     {"id": "llama2:7b",            "family": "Meta",        "description": "Llama 2 7B",                                                "ram": "~4 GB"},
     {"id": "llama2:13b",           "family": "Meta",        "description": "Llama 2 13B",                                               "ram": "~8 GB"},
+    {"id": "gemma4:e2b",           "family": "Google",      "description": "Gemma 4 E2B — multimodal (text+image), 128K context, edge device",  "ram": "~7 GB"},
+    {"id": "gemma4:e4b",           "family": "Google",      "description": "Gemma 4 E4B — multimodal (text+image), 128K context, edge device",  "ram": "~10 GB"},
+    {"id": "gemma4:26b",           "family": "Google",      "description": "Gemma 4 26B — MoE (4B active), multimodal, 256K context",           "ram": "~18 GB"},
+    {"id": "gemma4:31b",           "family": "Google",      "description": "Gemma 4 31B — dense, multimodal, 256K context",                     "ram": "~20 GB"},
     {"id": "gemma3:1b",            "family": "Google",      "description": "Gemma 3 1B — Google's efficient small model",               "ram": "~2 GB"},
     {"id": "gemma3:4b",            "family": "Google",      "description": "Gemma 3 4B",                                                "ram": "~4 GB"},
     {"id": "gemma3:12b",           "family": "Google",      "description": "Gemma 3 12B",                                               "ram": "~12 GB"},
@@ -784,6 +842,34 @@ async def set_keep_alive(req: KeepAliveRequest):
     return JSONResponse(content={"ok": True, "value": value})
 
 
+# ── Whisper model ─────────────────────────────────────────────────────────────
+
+WHISPER_MODELS = ["tiny", "base", "small", "medium", "large", "large-v2", "large-v3"]
+
+
+@router.get("/install/whisper/model")
+async def get_whisper_model():
+    """Return the current WHISPER_MODEL value from .env (or OS env)."""
+    value = os.getenv("WHISPER_MODEL", "small") or "small"
+    return JSONResponse(content={"value": value})
+
+
+class WhisperModelRequest(BaseModel):
+    value: str
+
+
+@router.post("/install/whisper/model")
+async def set_whisper_model(req: WhisperModelRequest):
+    """Write WHISPER_MODEL to .env."""
+    value = req.value.strip()
+    if value not in WHISPER_MODELS:
+        raise HTTPException(status_code=400, detail=f"Invalid model. Choose one of: {', '.join(WHISPER_MODELS)}")
+    _env_set("WHISPER_MODEL", value)
+    os.environ["WHISPER_MODEL"] = value
+    logger.info("🎙️  WHISPER_MODEL set to %s", value)
+    return JSONResponse(content={"ok": True, "value": value})
+
+
 # ── WhatsApp App Name ────────────────────────────────────────────────────────
 
 class WaAppNameRequest(BaseModel):
@@ -823,6 +909,32 @@ async def install_whatsapp_qr():
         return JSONResponse(content=r.json(), status_code=r.status_code)
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Bridge unreachable: {exc}")
+
+
+# ── WhatsApp Disconnect ───────────────────────────────────────────────────────
+
+@router.post("/install/whatsapp/disconnect")
+async def whatsapp_disconnect():
+    """
+    Disconnect the WhatsApp session:
+    1. Stop the bridge
+    2. Wipe all Baileys auth files
+    3. Restart the bridge (will regenerate a fresh QR)
+    """
+    import asyncio
+    import shutil
+
+    _stop_service("bridge")
+    await asyncio.sleep(1.0)
+
+    auth_dir = _PROJECT_ROOT / "bridge" / "baileys_auth"
+    if auth_dir.exists():
+        shutil.rmtree(auth_dir)
+    auth_dir.mkdir(exist_ok=True)
+
+    _start_bridge()
+    logger.info("📱 WhatsApp session disconnected — bridge restarted for fresh QR")
+    return JSONResponse(content={"ok": True})
 
 
 # ── Google OAuth endpoints ────────────────────────────────────────────────────
@@ -959,6 +1071,63 @@ async def google_auth_revoke():
     return JSONResponse(content={"ok": True, "status": "missing"})
 
 
+@router.get("/install/google-auth/calendars")
+@router.get("/google-auth/calendars")
+async def google_list_calendars():
+    """List all Google Calendars available to the authorized account."""
+    if not _TOKEN_PATH.exists():
+        raise HTTPException(status_code=400, detail="No token found — authorize first.")
+    try:
+        from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request
+        from googleapiclient.discovery import build
+        creds = Credentials.from_authorized_user_file(str(_TOKEN_PATH), _GOOGLE_SCOPES)
+        if creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+            _TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
+        service = build("calendar", "v3", credentials=creds)
+        items: list = []
+        page_token = None
+        while True:
+            kwargs = {"pageToken": page_token} if page_token else {}
+            result = service.calendarList().list(**kwargs).execute()
+            items.extend(result.get("items", []))
+            page_token = result.get("nextPageToken")
+            if not page_token:
+                break
+        calendars = [
+            {
+                "id": c["id"],
+                "name": c["summary"],
+                "primary": c.get("primary", False),
+            }
+            for c in items
+        ]
+        configured = os.getenv("GOOGLE_CALENDAR_NAME", "")
+        return JSONResponse(content={"calendars": calendars, "configured": configured})
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+class SetCalendarRequest(BaseModel):
+    name: str
+
+
+@router.post("/install/google-auth/calendar")
+@router.post("/google-auth/calendar")
+async def google_set_calendar(req: SetCalendarRequest):
+    """Save the chosen Google Calendar name to .env."""
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Calendar name is required.")
+    _env_set("GOOGLE_CALENDAR_NAME", name)
+    os.environ["GOOGLE_CALENDAR_NAME"] = name
+    logger.info("📅 GOOGLE_CALENDAR_NAME set to '%s'", name)
+    return JSONResponse(content={"ok": True, "name": name})
+
+
 # ── Sender Restrictions (Install Wizard) ─────────────────────────────────────
 
 class AuthorizeSenderRequest(BaseModel):
@@ -1063,12 +1232,6 @@ async def authorize_sender(req: AuthorizeSenderRequest):
 
 # ── Location & Briefing Settings (Install Wizard) ────────────────────────────
 
-_BRIEFING_LANGUAGES = [
-    "English", "Spanish", "Italian", "French", "German",
-    "Portuguese", "Dutch", "Polish", "Russian", "Japanese",
-    "Chinese", "Arabic", "Turkish", "Korean", "Swedish",
-]
-
 _TIMEZONES = [
     "Africa/Abidjan", "Africa/Cairo", "Africa/Johannesburg", "Africa/Lagos",
     "America/Argentina/Buenos_Aires", "America/Bogota", "America/Chicago",
@@ -1104,7 +1267,6 @@ async def get_location_settings():
         "longitude":         os.getenv("DEFAULT_LONGITUDE", ""),
         "timezone":          os.getenv("TIMEZONE_DEFAULT", ""),
         "briefing_language": os.getenv("BRIEFING_LANGUAGE", "English"),
-        "briefing_languages": _BRIEFING_LANGUAGES,
         "timezones":         _TIMEZONES,
     })
 

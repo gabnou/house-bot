@@ -31,12 +31,11 @@
 	}
 
 	const navItems = [
-		{ href: '/',        label: 'Home',           icon: '🏠', phase: null },
-		{ href: '/install', label: 'Installation',   icon: '🚀', phase: null },
-		{ href: '/config',  label: 'Configuration',  icon: '⚙️',  phase: null },
-		{ href: '/prompts', label: 'Prompting',       icon: '✏️',  phase: null },
-		{ href: '/admin',   label: 'Admin',            icon: '🔧', phase: null },
-		{ href: '/status',  label: 'Status',           icon: '⚡', phase: null },
+		{ href: '/',        label: 'Home',          icon: '🏠', phase: null },
+		{ href: '/config', label: 'Configuration', icon: '⚙️',  phase: null },
+		{ href: '/prompts', label: 'Prompting',      icon: '✏️',  phase: null },
+		{ href: '/admin',   label: 'Admin',           icon: '🔧', phase: null },
+		{ href: '/status',  label: 'Status',          icon: '⚡', phase: null },
 	];
 
 	// Exact match for '/', prefix match for everything else
