@@ -33,12 +33,12 @@ def classify_intent_category(text: str) -> str | None:
         "Classify the following message into one of these categories: shopping, weather, calendar.\n"
         "The message may be a translation from another language and may not start with the exact keyword, "
         "but its intent should clearly relate to one of these domains:\n"
-        "- **shopping**: buying groceries, adding/removing items from a shopping list, "
+        "- shopping: buying groceries, adding/removing items from a shopping list, "
         "what to buy, provisions, supplies, supermarket, store.\n"
-        "- **weather**: forecast, temperature, rain, sun, wind, climate, meteorology, conditions.\n"
-        "- **calendar**: events, appointments, schedule, agenda, meetings, dates, reminders.\n\n"
-        "If the message clearly belongs to one of these, respond ONLY with the category name "
-        "(shopping, weather, or calendar). If it does not clearly belong to any, respond with \"none\".\n\n"
+        "- weather: forecast, temperature, rain, sun, wind, climate, meteorology, conditions.\n"
+        "- calendar: events, appointments, schedule, agenda, meetings, dates, reminders.\n\n"
+        "Respond with exactly one word — no punctuation, no markdown, no explanation: "
+        "shopping, weather, calendar, or none.\n\n"
         f"Message: \"{text}\"\nCategory:"
     )
     try:
@@ -48,7 +48,9 @@ def classify_intent_category(text: str) -> str | None:
             "stream": False,
             "options": {"temperature": 0, "num_predict": 10},
         }, timeout=15)
-        answer = response.json().get("response", "").strip().lower().strip('"').strip()
+        raw = response.json().get("response", "").strip().lower()
+        # Strip markdown formatting (e.g. **shopping** → shopping) and stray punctuation
+        answer = re.sub(r'[*_`#]', '', raw).strip().strip('"').strip("'").strip()
         logger.debug("🏷️ classify_intent_category → '%s' for: %s", answer, text)
         if answer in ("shopping", "weather", "calendar"):
             return answer

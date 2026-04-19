@@ -113,6 +113,10 @@
 	let pendingDeleteModel = $state<string | null>(null);
 	let deleteError = $state<string | null>(null);
 
+	// Model loading (switch active)
+	let loadingModel = $state<string | null>(null);
+	let loadModelError = $state<string | null>(null);
+
 	let chatModel = $state('');
 	let chatMessage = $state('');
 	let chatResponse = $state('');
@@ -491,24 +495,37 @@
 		}
 	}
 
+	async function loadModel(name: string) {
+		loadingModel = name;
+		loadModelError = null;
+		try {
+			const res = await fetch('/admin/api/ollama/switch', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ model: name, persist: true }),
+			});
+			if (!res.ok) {
+				const err = await res.json().catch(() => ({}));
+				throw new Error((err as { detail?: string }).detail ?? `HTTP ${res.status}`);
+			}
+			configuredModel = name;
+			await loadInstalledModels();
+		} catch (e) {
+			loadModelError = e instanceof Error ? e.message : String(e);
+		} finally {
+			loadingModel = null;
+		}
+	}
+
 	async function markVerified() {
 		chatVerdictLoading = true;
 		chatVerdictError = null;
 		try {
-			// Persist model to .env and warm up
-			const sw = await fetch('/admin/api/ollama/switch', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ model: chatModel, persist: true }),
-			});
-			if (!sw.ok) throw new Error(`HTTP ${sw.status}`);
-			// Mark as verified in the store
 			await fetch('/admin/api/ollama/tested', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ model: chatModel }),
 			});
-			configuredModel = chatModel;
 			chatVerdict = 'verified';
 			await loadInstalledModels();
 		} catch (e) {
@@ -1291,12 +1308,12 @@
 		</div>
 
 		<!-- ── Step 1: Ollama — AI Models (interactive) ──────────────────────────── -->
-		<div class="card bg-surface-50-950 border border-surface-200-800 rounded-xl overflow-hidden">
+		<div class="card bg-surface-50-950 border border-surface-200-800 rounded-xl">
 
 			<!-- Accordion header -->
 			<button
 				onclick={toggleStep1}
-				class="w-full p-4 flex items-center gap-4 text-left hover:bg-surface-100-900/50 transition-colors"
+				class="w-full p-4 flex items-center gap-4 text-left hover:bg-surface-100-900/50 transition-colors rounded-xl"
 			>
 				<div class="w-9 h-9 rounded-full bg-surface-100-900 border border-surface-200-800 flex items-center justify-center text-lg shrink-0">
 					🧠
@@ -1400,9 +1417,11 @@
 						{#if deleteError}
 							<p class="text-xs text-error-400">❌ {deleteError}</p>
 						{/if}
+						{#if loadModelError}
+							<p class="text-xs text-error-400">❌ {loadModelError}</p>
+						{/if}
 					</div>
 
-					<!-- Load and Test Model -->
 					{#if installedModels.length > 0}
 						<div class="space-y-3 pt-3 border-t border-surface-200-800">
 							<div>
@@ -1459,7 +1478,7 @@
 											disabled={chatVerdictLoading}
 											class="flex-1 px-3 py-1.5 rounded-lg text-xs font-medium bg-success-500/15 text-success-400 hover:bg-success-500/25 transition-colors disabled:opacity-40"
 										>
-											✓ Tested — set as active
+											✓ Tested
 										</button>
 										<button
 											onclick={markIncompatible}
@@ -1471,7 +1490,7 @@
 									</div>
 								{:else if chatVerdict === "verified"}
 									<div class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-success-500/10 border border-success-500/30">
-										<span class="text-success-400 text-xs">✓ Model set as active and marked as tested.</span>
+										<span class="text-success-400 text-xs">✓ Model marked as tested. Use ▶ on the card above to set it as active.</span>
 									</div>
 								{:else if chatVerdict === "incompatible"}
 									<div class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-warning-500/10 border border-warning-500/30">

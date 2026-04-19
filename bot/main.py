@@ -247,13 +247,12 @@ async def handle_message(msg: Message):
             case _:
                 llm_reply = intent.get("reply", "I couldn't understand, please try again!")
                 reply = (
-                    "🤖 I didn't understand what you mean. 😊\n"
-                    "I can help you with:\n"
+                    "🤖 I didn't understand what you mean and I answer:\n"
+                    f"{llm_reply}\n"
+                    "🤖 I can help you with:\n"
                     "🛒 Shopping list\n"
                     "🌤️ Weather forecasts\n"
                     "📅 Google Calendar\n\n"    
-                    "🤖 Here's my best answer:\n"
-                    f"{llm_reply}"
                 )
 
     t2 = time.time()
