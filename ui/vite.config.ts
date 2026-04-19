@@ -42,6 +42,10 @@ export default defineConfig({
 						);
 					});
 				}
+			},
+			'/message': {
+				target: 'http://localhost:8000',
+				changeOrigin: true,
 			}
 		}
 	}

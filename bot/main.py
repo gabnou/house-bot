@@ -31,6 +31,8 @@ from services.shopping_db import init_db
 from intent_parser import parse_intent, detect_category, validate_transcription, detect_language, translate_to_english, translate_from_english, classify_intent_category
 from admin.router import router as admin_router
 
+WHATSAPP_APPNAME = os.getenv("WHATSAPP_APPNAME", "HouseBot").strip()
+
 # List of partner JIDs from env (format: jid:name,jid:name or plain jid,jid)
 PARTNER = [
     entry.split(":")[0].strip()
@@ -38,43 +40,26 @@ PARTNER = [
     if entry.strip()
 ]
 
-# Regex patterns for intent detection
-_PATTERN_SHOW_LIST = _re.compile(
-    r'\b(show(?!\s+(calendar|events|weather))|list|grocery\s+list|shopping\s+list|what\'s\s+missing|groceries)\b',
+# Regex patterns for identity and help — the only domain-independent intents
+# safe to short-circuit without LLM. All domain-specific patterns (shopping,
+# calendar, weather) are handled by parse_intent() to avoid cross-domain mismatches.
+_PATTERN_IDENTITY = _re.compile(
+    r'\b(who\s+are\s+you|what\s+are\s+you|what(?:\'s|\s+is)\s+your\s+name|introduce\s+yourself)\b',
     _re.IGNORECASE
 )
-_PATTERN_BOUGHT = _re.compile(
-    r'\b(i\s+(bought|got|picked\s+up)|bought|got|purchased)\b',
-    _re.IGNORECASE
-)
-_PATTERN_REMOVE = _re.compile(
-    r'\b(remove|delete|drop|take\s+off|cross\s+off)\b',
-    _re.IGNORECASE
-)
-_PATTERN_ADD = _re.compile(
-    r'^\s*add\b',
-    _re.IGNORECASE
-)
-_PATTERN_CALENDAR_TODAY = _re.compile(
-    r'^(show\s+(calendar|events)|calendar|agenda|appointments|events(\s+today)?|today|what\s+do\s+i\s+have\s+today)$',
+_PATTERN_HELP = _re.compile(
+    r'^(help|what\s+can\s+you\s+do|commands?|how\s+to\s+use(\s+you)?)$',
     _re.IGNORECASE
 )
 
-# Fast intent detection for simple messages
+# Fast intent detection — only for domain-independent intents (identity, help).
+# Returns None for everything else, delegating to parse_intent() via the LLM.
 def pre_route(text: str) -> dict | None:
     t = text.strip().lower()
-    if _PATTERN_BOUGHT.search(t):
-        return {"action": "bought"}
-    if _PATTERN_REMOVE.search(t):
-        return {"action": "remove"}
-    if _PATTERN_CALENDAR_TODAY.match(t):
-        return {"action": "calendar_show", "days": 1, "offset_days": 0}
-    if detect_category(text) is not None:
-        return None
-    if _PATTERN_ADD.search(t):
-        return {"action": "add"}
-    if _PATTERN_SHOW_LIST.search(t):
-        return {"action": "show", "category": None}
+    if _PATTERN_IDENTITY.search(t):
+        return {"action": "identity"}
+    if _PATTERN_HELP.match(t):
+        return {"action": "help"}
     return None
 
 # Global Whisper model instance
@@ -185,16 +170,22 @@ async def handle_message(msg: Message):
                 logger.info("🌐 Translated to English: %s", translated)
                 detected_lang = lang
                 effective_text = translated
+                # Re-run fast routing on the translated text — saves classify + parse_intent LLM calls
+                # for simple messages like "aiuto" → "help", "chi sei?" → "who are you?"
+                intent = pre_route(effective_text)
+                if intent:
+                    logger.debug("⚡ pre_route match (post-translation): %s", intent)
 
-        # Classify category if not directly detectable (handles non-keyword messages)
-        if detect_category(effective_text) is None:
-            classified = classify_intent_category(effective_text)
-            if classified:
-                logger.info("🏷️ Classified as '%s' — prepending keyword", classified)
-                effective_text = f"{classified} {effective_text}"
+        if not intent:
+            # Classify category if not directly detectable (handles non-keyword messages)
+            if detect_category(effective_text) is None:
+                classified = classify_intent_category(effective_text)
+                if classified:
+                    logger.info("🏷️ Classified as '%s' — prepending keyword", classified)
+                    effective_text = f"{classified} {effective_text}"
 
-        logger.debug("🤖 Sending to Ollama: '%s'", effective_text)
-        intent = parse_intent(effective_text)
+            logger.debug("🤖 Sending to Ollama: '%s'", effective_text)
+            intent = parse_intent(effective_text)
 
     action = intent.get("action", "unknown")
     t1 = time.time()
@@ -215,49 +206,53 @@ async def handle_message(msg: Message):
     else:
         # Fallback for actions not handled by any skill (help, unknown, error)
         match action:
+            case "identity":
+                reply = (
+                    f"🤖 I'm *{WHATSAPP_APPNAME}*, your home assistant bot!\n\n"
+                    "I can help you with:\n"
+                    "🛒 Shopping list\n"
+                    "🌤️ Weather forecasts\n"
+                    "📅 Google Calendar\n\n"
+                    "Send *help* to see all available commands."
+                )
             case "help":
                 reply = (
-                    "🤖 *House-Bot — What I can do*\n\n"
+                    f"🤖 *{WHATSAPP_APPNAME} — What I can do*\n\n"
                     "🛒 *Shopping list*\n"
-                    "  shopping add milk and eggs\n"
-                    "  shopping add aspirin\n"
-                    "  shopping I bought milk\n"
-                    "  shopping remove bread\n"
-                    "  shopping what's missing?\n"
-                    "  shopping clear the list\n\n"
+                    "  add milk and eggs\n"
+                    "  add aspirin\n"
+                    "  I bought milk\n"
+                    "  remove bread\n"
+                    "  what's missing?\n"
+                    "  clear the list\n\n"
                     "🌤️ *Weather*\n"
-                    "  weather <city> (default: Barcelona)\n"
+                    "  weather in Barcelona\n"
                     "  weather now\n"
                     "  weather now in Milan\n"
-                    "  weather next 4 days\n"
-                    "  weather next hours\n"
-                    "  weather next 6 hours in Ripoll\n"
-                    "  weather forecast\n"
-                    "  weather forecast London\n\n"
+                    "  forecast next 4 days\n"
+                    "  forecast next hours\n"
+                    "  forecast next 6 hours in New York\n"
+                    "  forecast\n"
+                    "  forecast London\n\n"
                     "📅 *Calendar*\n"
-                    "  calendar what do I have today?\n"
-                    "  calendar this week\n"
-                    "  calendar events in april\n"
-                    "  calendar from the 5th to the 20th of april\n"
-                    "  calendar details dinner with Gael\n"
-                    "  calendar add dinner with Gael friday 28th at 9pm\n"
-                    "  calendar delete dinner with Gael\n"
-                    "  calendar move doctor visit to april 6th at 11am\n\n"
+                    "  what do I have today?\n"
+                    "  this week\n"
+                    "  events in April\n"
+                    "  events from the 5th to the 20th of April\n"
+                    "  details dinner with John\n"
+                    "  add dinner with John friday 28th at 9pm\n"
+                    "  delete dinner with John\n"
+                    "  move doctor visit from April 5th to April 6th at 11am\n\n"
                 )
             case _:
                 llm_reply = intent.get("reply", "I couldn't understand, please try again!")
-                suggestion = ""
-                if detect_category(effective_text) is None:
-                    suggestion = (
-                        "💡 *Tip:* start your message with a keyword:\n"
-                        "• *shopping* show list\n"
-                        "• *weather* forecast tomorrow\n"
-                        "• *calendar* events this week\n"
-                    )
                 reply = (
-                    "🤖 I'm not sure which of the 3 things I can do you mean. 😊\n"
-                    f"{suggestion}"
-                    "\n🤖 Here's my best answer:\n"
+                    "🤖 I didn't understand what you mean. 😊\n"
+                    "I can help you with:\n"
+                    "🛒 Shopping list\n"
+                    "🌤️ Weather forecasts\n"
+                    "📅 Google Calendar\n\n"    
+                    "🤖 Here's my best answer:\n"
                     f"{llm_reply}"
                 )
 

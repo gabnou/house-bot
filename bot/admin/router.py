@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import signal
 import logging
 import subprocess
@@ -233,6 +234,8 @@ async def ollama_models():
         r = _req.get(f"{base}/api/tags", timeout=5)
         r.raise_for_status()
         raw = r.json().get("models", [])
+        tested = _load_tested_models()
+        incompatible = _load_incompatible_models()
         models = [
             {
                 "name": m["name"],
@@ -240,6 +243,8 @@ async def ollama_models():
                 "modified": m.get("modified_at", ""),
                 "family": m.get("details", {}).get("family", ""),
                 "params": m.get("details", {}).get("parameter_size", ""),
+                "tested": m["name"] in tested,
+                "incompatible": m["name"] in incompatible,
             }
             for m in raw
         ]
@@ -317,17 +322,121 @@ async def ollama_restart():
     return JSONResponse(content={"ok": True, "message": "Ollama restart initiated"})
 
 
+@router.get("/ollama/version")
+async def ollama_version():
+    """Return the installed Ollama version and the latest available from GitHub."""
+    import requests as _req
+
+    base = _ollama_base()
+
+    # Installed version — try Ollama server API first, fall back to CLI
+    installed: str | None = None
+    try:
+        r = _req.get(f"{base}/api/version", timeout=3)
+        if r.status_code == 200:
+            installed = r.json().get("version")
+    except Exception:
+        pass
+    if not installed:
+        try:
+            result = subprocess.run(
+                ["ollama", "--version"], capture_output=True, text=True, timeout=5
+            )
+            parts = result.stdout.strip().split()
+            installed = parts[-1] if parts else None
+        except Exception:
+            pass
+
+    # Latest version from GitHub releases
+    latest: str | None = None
+    try:
+        r = _req.get(
+            "https://api.github.com/repos/ollama/ollama/releases/latest",
+            headers={"Accept": "application/vnd.github.v3+json"},
+            timeout=8,
+        )
+        if r.status_code == 200:
+            tag = r.json().get("tag_name", "")
+            latest = tag.lstrip("v")
+    except Exception:
+        pass
+
+    # Compare versions (e.g. "0.7.1" vs "0.6.9")
+    update_available = False
+    if installed and latest:
+        try:
+            def _ver(v: str):
+                return tuple(int(x) for x in v.split(".") if x.isdigit())
+            update_available = _ver(latest) > _ver(installed)
+        except Exception:
+            update_available = installed != latest
+
+    return JSONResponse(content={
+        "installed": installed,
+        "latest": latest,
+        "update_available": update_available,
+    })
+
+
+_upgrade_state: dict = {"status": "idle", "log": [], "exit_code": None}
+_upgrade_lock = threading.Lock()
+
+
+@router.get("/ollama/upgrade/status")
+async def ollama_upgrade_status():
+    """Return the current state of an ongoing (or last completed) brew upgrade."""
+    with _upgrade_lock:
+        return JSONResponse(content=dict(_upgrade_state))
+
+
+@router.post("/ollama/upgrade")
+async def ollama_upgrade():
+    """Upgrade Ollama via brew (macOS). Streams stdout/stderr into a shared state for polling."""
+    with _upgrade_lock:
+        if _upgrade_state["status"] == "running":
+            return JSONResponse(content={"ok": False, "message": "Upgrade already in progress."})
+        _upgrade_state.update({"status": "running", "log": [], "exit_code": None})
+
+    def _do_upgrade():
+        try:
+            proc = subprocess.Popen(
+                ["brew", "upgrade", "ollama"],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True,
+            )
+            assert proc.stdout is not None
+            for raw_line in proc.stdout:
+                line = raw_line.rstrip()
+                if line:
+                    with _upgrade_lock:
+                        _upgrade_state["log"].append(line)
+                        if len(_upgrade_state["log"]) > 50:
+                            _upgrade_state["log"] = _upgrade_state["log"][-50:]
+            proc.wait(timeout=300)
+            with _upgrade_lock:
+                _upgrade_state["exit_code"] = proc.returncode
+                _upgrade_state["status"] = "done" if proc.returncode == 0 else "failed"
+        except Exception as exc:
+            with _upgrade_lock:
+                _upgrade_state["status"] = "failed"
+                _upgrade_state["log"].append(str(exc))
+
+    threading.Thread(target=_do_upgrade, daemon=True).start()
+    logger.info("⬆️ Ollama upgrade initiated via brew")
+    return JSONResponse(content={"ok": True, "message": "Upgrade started."})
+
+
 class SwitchModelRequest(BaseModel):
     model: str
+    persist: bool = True
 
 
 @router.post("/ollama/switch")
 async def ollama_switch(req: SwitchModelRequest):
     """
-    Switch the active Ollama model:
-    1. Write OLLAMA_MODEL=<model> to .env
-    2. Unload the current model (ollama stop)
-    3. Warm up the new model in the background (ollama run <model> "")
+    Switch the active Ollama model.
+    When persist=True (default): write OLLAMA_MODEL to .env, unload old model.
+    When persist=False: only update in-memory MODEL for a temporary test run.
     """
     import requests as _req
 
@@ -337,32 +446,41 @@ async def ollama_switch(req: SwitchModelRequest):
 
     base = _ollama_base()
 
-    # 1. Persist to .env
-    _env_set("OLLAMA_MODEL", model)
+    # Always update in-memory so /message uses the new model immediately
     os.environ["OLLAMA_MODEL"] = model
+    import sys
+    if "intent_parser" in sys.modules:
+        sys.modules["intent_parser"].MODEL = model
 
-    # 2. Unload current model
-    try:
-        r = _req.get(f"{base}/api/ps", timeout=3)
-        current_models = r.json().get("models", [])
-        for m in current_models:
-            current_name = m["name"]
-            if current_name != model:
-                subprocess.Popen(
-                    ["ollama", "stop", current_name],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-                )
-    except Exception:
-        pass  # non-fatal
+    if req.persist:
+        # 1. Persist to .env
+        _env_set("OLLAMA_MODEL", model)
 
-    # 3. Warm up new model asynchronously
-    subprocess.Popen(
-        ["ollama", "pull", model],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    )
+        # 2. Unload current model
+        try:
+            r = _req.get(f"{base}/api/ps", timeout=3)
+            current_models = r.json().get("models", [])
+            for m in current_models:
+                current_name = m["name"]
+                if current_name != model:
+                    subprocess.Popen(
+                        ["ollama", "stop", current_name],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                    )
+        except Exception:
+            pass  # non-fatal
 
-    logger.info("🧠 Model switched to %s", model)
-    return JSONResponse(content={"ok": True, "model": model})
+        # 3. Warm up new model asynchronously
+        subprocess.Popen(
+            ["ollama", "pull", model],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+
+        logger.info("🧠 Model switched to %s (persisted)", model)
+    else:
+        logger.info("🧪 Model temporarily loaded for testing: %s", model)
+
+    return JSONResponse(content={"ok": True, "model": model, "persisted": req.persist})
 
 
 # ── Ollama Model Catalog ─────────────────────────────────────────────────────
@@ -431,6 +549,41 @@ _OLLAMA_STATIC_CATALOG = [
     {"id": "orca-mini:7b",         "family": "Orca",        "description": "Orca Mini 7B",                                             "ram": "~4 GB"},
 ]
 
+# ── Tested models store ───────────────────────────────────────────────────────
+_TESTED_MODELS_FILE = _PROJECT_ROOT / "bot" / "tested_models.json"
+_INCOMPATIBLE_MODELS_FILE = _PROJECT_ROOT / "bot" / "incompatible_models.json"
+
+def _load_tested_models() -> set[str]:
+    try:
+        return set(json.loads(_TESTED_MODELS_FILE.read_text(encoding="utf-8")))
+    except Exception:
+        return set()
+
+def _save_tested_model(model: str) -> None:
+    tested = _load_tested_models()
+    tested.add(model)
+    _TESTED_MODELS_FILE.write_text(json.dumps(sorted(tested), indent=2), encoding="utf-8")
+
+def _load_incompatible_models() -> set[str]:
+    try:
+        return set(json.loads(_INCOMPATIBLE_MODELS_FILE.read_text(encoding="utf-8")))
+    except Exception:
+        return set()
+
+def _save_incompatible_model(model: str) -> None:
+    incompatible = _load_incompatible_models()
+    incompatible.add(model)
+    _INCOMPATIBLE_MODELS_FILE.write_text(json.dumps(sorted(incompatible), indent=2), encoding="utf-8")
+
+def _remove_incompatible_model(model: str) -> None:
+    incompatible = _load_incompatible_models()
+    incompatible.discard(model)
+    _INCOMPATIBLE_MODELS_FILE.write_text(json.dumps(sorted(incompatible), indent=2), encoding="utf-8")
+
+def _is_compatible(model_name: str) -> bool:
+    return True  # kept for API compatibility; removed hardcoded rules
+
+
 
 @router.get("/ollama/catalog")
 async def ollama_catalog(q: str = ""):
@@ -458,6 +611,35 @@ async def ollama_catalog(q: str = ""):
         catalog.append(m)
 
     return JSONResponse(content={"catalog": catalog, "installed": list(installed_names)})
+
+
+class MarkTestedRequest(BaseModel):
+    model: str
+
+@router.post("/ollama/tested")
+async def ollama_mark_tested(req: MarkTestedRequest):
+    """Mark a model as successfully tested with HouseBot."""
+    model = req.model.strip()
+    if not model:
+        raise HTTPException(status_code=400, detail="model name is required")
+    _save_tested_model(model)
+    _remove_incompatible_model(model)  # un-flag if previously marked incompatible
+    logger.info("✅ Model marked as tested: %s", model)
+    return JSONResponse(content={"ok": True, "model": model, "tested": sorted(_load_tested_models())})
+
+
+class MarkIncompatibleRequest(BaseModel):
+    model: str
+
+@router.post("/ollama/incompatible")
+async def ollama_mark_incompatible(req: MarkIncompatibleRequest):
+    """Mark a model as incompatible with HouseBot."""
+    model = req.model.strip()
+    if not model:
+        raise HTTPException(status_code=400, detail="model name is required")
+    _save_incompatible_model(model)
+    logger.info("⚠️ Model marked as incompatible: %s", model)
+    return JSONResponse(content={"ok": True, "model": model, "incompatible": sorted(_load_incompatible_models())})
 
 
 class DeleteModelRequest(BaseModel):
