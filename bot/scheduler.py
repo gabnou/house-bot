@@ -22,6 +22,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 FASTAPI_URL = "http://localhost:8000"
+WHATSAPP_APPNAME = os.getenv("WHATSAPP_APPNAME", "HouseBot").strip()
 _briefing_time = os.getenv("BRIEFING_TIME", "07:30").strip()
 try:
     _bt_parts = _briefing_time.split(":")
@@ -114,7 +115,7 @@ def send_briefing():
     quote = generate_morning_quote()
     logger.info("💭 Quote: %s", quote[:50] if quote else 'EMPTY')
 
-    text = f"{weather}\n\n{calendar}\n\n💭 {quote}"
+    text = f"🤖 *{WHATSAPP_APPNAME}* — Good morning!\n\n{weather}\n\n{calendar}\n\n💭 {quote}"
 
     if BRIEFING_LANGUAGE:
         logger.info("🌐 Translating briefing to %s...", BRIEFING_LANGUAGE)
