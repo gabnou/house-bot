@@ -61,6 +61,79 @@
 	let ollamaBusy = $state(false);
 	let ollamaMsg = $state<{ ok: boolean; text: string } | null>(null);
 
+	// ── Ollama update checker ──────────────────────────────────────────────
+	let ollamaInstalledVer = $state<string | null>(null);
+	let ollamaLatestVer = $state<string | null>(null);
+	let ollamaUpdateAvailable = $state<boolean | null>(null);
+	let ollamaVersionBusy = $state(false);
+
+	// upgrade progress
+	type UpgradeStatus = 'idle' | 'running' | 'done' | 'failed';
+	let upgradeStatus = $state<UpgradeStatus>('idle');
+	let upgradeLog = $state<string[]>([]);
+	let upgradeExitCode = $state<number | null>(null);
+	let upgradePollTimer = $state<ReturnType<typeof setInterval> | null>(null);
+
+	function stopUpgradePoll() {
+		if (upgradePollTimer !== null) { clearInterval(upgradePollTimer); upgradePollTimer = null; }
+	}
+
+	async function pollUpgradeStatus() {
+		try {
+			const res = await fetch('/admin/api/ollama/upgrade/status');
+			if (!res.ok) return;
+			const data = await res.json();
+			upgradeStatus = data.status ?? 'idle';
+			upgradeLog = data.log ?? [];
+			upgradeExitCode = data.exit_code ?? null;
+			if (upgradeStatus === 'done' || upgradeStatus === 'failed') {
+				stopUpgradePoll();
+				if (upgradeStatus === 'done') {
+					// reset version state so user re-checks after upgrade
+					ollamaUpdateAvailable = null;
+					ollamaInstalledVer = null;
+					ollamaLatestVer = null;
+				}
+			}
+		} catch { /* non-fatal */ }
+	}
+
+	async function checkOllamaUpdate() {
+		ollamaVersionBusy = true;
+		try {
+			const res = await fetch('/admin/api/ollama/version');
+			if (res.ok) {
+				const data = await res.json();
+				ollamaInstalledVer = data.installed ?? null;
+				ollamaLatestVer = data.latest ?? null;
+				ollamaUpdateAvailable = data.update_available ?? false;
+			}
+		} catch { /* non-fatal */ } finally {
+			ollamaVersionBusy = false;
+		}
+	}
+
+	async function upgradeOllama() {
+		upgradeLog = [];
+		upgradeStatus = 'running';
+		upgradeExitCode = null;
+		try {
+			const res = await fetch('/admin/api/ollama/upgrade', { method: 'POST' });
+			const data = await res.json();
+			if (!data.ok) {
+				upgradeStatus = 'failed';
+				upgradeLog = [data.message ?? 'Upgrade failed.'];
+				return;
+			}
+			// start polling every 2s
+			stopUpgradePoll();
+			upgradePollTimer = setInterval(pollUpgradeStatus, 2000);
+		} catch (e: unknown) {
+			upgradeStatus = 'failed';
+			upgradeLog = [e instanceof Error ? e.message : 'Request failed'];
+		}
+	}
+
 	async function loadOllamaStatus() {
 		try {
 			const res = await fetch('/admin/api/ollama/status');
@@ -216,6 +289,85 @@
 				Use Restart only if Ollama is unresponsive or unreachable. To switch to a different model, go to the
 				<a href="/config" class="text-primary-400 hover:underline">Configuration page</a>.
 			</p>
+
+			<!-- Update checker -->
+			<div class="pt-3 border-t border-surface-100-900 space-y-2">
+				<!-- Version box — mirrors the status box above -->
+				<div class="flex items-center gap-3 px-4 py-3 rounded-xl border
+					{ollamaInstalledVer === null
+						? 'border-surface-200-800 bg-surface-100-900/50'
+						: ollamaUpdateAvailable
+							? 'border-warning-500/40 bg-warning-500/5'
+							: 'border-success-500/40 bg-success-500/5'}">
+					<div class="w-2.5 h-2.5 rounded-full shrink-0
+						{ollamaInstalledVer === null
+							? 'bg-surface-400-600'
+							: ollamaUpdateAvailable ? 'bg-warning-400' : 'bg-success-500'}"></div>
+					<div class="flex-1">
+						<p class="text-xs font-semibold">
+							{ollamaInstalledVer === null
+								? 'Ollama version'
+								: ollamaUpdateAvailable ? '⚠️ Update available' : '✅ Up to date'}
+						</p>
+						{#if ollamaInstalledVer}
+							<p class="text-[10px] text-surface-400-600 mt-0.5">Installed: {ollamaInstalledVer}</p>
+						{/if}
+						{#if ollamaLatestVer}
+							<p class="text-[10px] text-surface-400-600">Latest: {ollamaLatestVer}</p>
+						{/if}
+					</div>
+					{#if ollamaUpdateAvailable}
+						<button
+							onclick={upgradeOllama}
+							disabled={upgradeStatus === 'running'}
+							class="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium
+							bg-warning-500/20 text-warning-400 hover:bg-warning-500/30
+							transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+						>
+							{upgradeStatus === 'running' ? '…' : '⬆️ Upgrade'}
+						</button>
+					{/if}
+					<button
+						onclick={checkOllamaUpdate}
+						disabled={ollamaVersionBusy}
+						class="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium bg-surface-100-900
+						hover:bg-surface-200-800 text-surface-500-500 transition-colors
+						disabled:opacity-40 disabled:cursor-not-allowed"
+					>
+						{ollamaVersionBusy ? '…' : '🔍 Check'}
+					</button>
+				</div>
+				<!-- Upgrade progress panel -->
+				{#if upgradeStatus !== 'idle'}
+					<div class="rounded-xl border overflow-hidden
+						{upgradeStatus === 'running' ? 'border-primary-500/30 bg-primary-500/5' :
+						 upgradeStatus === 'done'    ? 'border-success-500/40 bg-success-500/5' :
+						                              'border-error-500/40 bg-error-500/5'}">
+						<!-- Status bar -->
+						<div class="flex items-center gap-2 px-4 py-2 border-b
+							{upgradeStatus === 'running' ? 'border-primary-500/20' :
+							 upgradeStatus === 'done'    ? 'border-success-500/20' :
+							                              'border-error-500/20'}">
+							{#if upgradeStatus === 'running'}
+								<span class="inline-block w-2 h-2 rounded-full bg-primary-400 animate-pulse"></span>
+								<span class="text-xs font-semibold text-primary-400">Upgrading…</span>
+							{:else if upgradeStatus === 'done'}
+								<span class="text-xs font-semibold text-success-500">✅ Upgrade complete</span>
+							{:else}
+								<span class="text-xs font-semibold text-error-400">❌ Upgrade failed{upgradeExitCode !== null ? ` (exit ${upgradeExitCode})` : ''}</span>
+							{/if}
+							<button
+								onclick={() => { upgradeStatus = 'idle'; upgradeLog = []; upgradeExitCode = null; stopUpgradePoll(); }}
+								class="ml-auto text-[10px] text-surface-400-600 hover:text-surface-900-50 transition-colors"
+							>✕ dismiss</button>
+						</div>
+						<!-- Log output -->
+						<pre class="font-mono text-[10px] text-surface-400-600 px-4 py-3 max-h-40 overflow-y-auto whitespace-pre-wrap break-all leading-relaxed">{
+							upgradeLog.length ? upgradeLog.join('\n') : '(waiting for output…)'
+						}</pre>
+					</div>
+				{/if}
+			</div>
 		</div>
 	</div>
 

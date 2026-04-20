@@ -2,7 +2,7 @@
 	import { goto } from '$app/navigation';
 
 	// ── Types ────────────────────────────────────────────────────────────────
-	type InstalledModelDetail = { name: string; size_gb: number; family: string; params: string };
+	type InstalledModelDetail = { name: string; size_gb: number; family: string; params: string; tested: boolean; incompatible: boolean };
 	type CatalogModel = { id: string; family: string; description: string; ram: string };
 
 	// ── Language constants ────────────────────────────────────────────────────
@@ -113,11 +113,18 @@
 	let pendingDeleteModel = $state<string | null>(null);
 	let deleteError = $state<string | null>(null);
 
+	// Model loading (switch active)
+	let loadingModel = $state<string | null>(null);
+	let loadModelError = $state<string | null>(null);
+
 	let chatModel = $state('');
 	let chatMessage = $state('');
 	let chatResponse = $state('');
 	let chatLoading = $state(false);
 	let chatError = $state<string | null>(null);
+	let chatVerdict = $state<'verified' | 'rejected' | null>(null);
+	let chatVerdictLoading = $state(false);
+	let chatVerdictError = $state<string | null>(null);
 
 	const step1Done = $derived(installedModels.length > 0);
 
@@ -169,6 +176,15 @@
 	const chatLoadEstimate = $derived(
 		chatModel ? `~${estimateLoadSeconds(chatModel)}s` : 'a moment'
 	);
+
+	// Reset verdict when the user selects a different model or sends a new message
+	$effect(() => {
+		chatModel; // track
+		chatVerdict = null;
+		chatVerdictError = null;
+		chatResponse = '';
+		chatError = null;
+	});
 
 	// ── Keep-alive ──────────────────────────────────────────────────────────────
 	const KEEP_ALIVE_PRESETS = [
@@ -400,6 +416,7 @@
 		deletingModel = name;
 		pendingDeleteModel = null;
 		deleteError = null;
+		const wasConfigured = configuredModel === name;
 		try {
 			const res = await fetch('/admin/api/ollama/models', {
 				method: 'DELETE',
@@ -410,6 +427,18 @@
 				await loadInstalledModels();
 				await loadCatalog();
 				if (chatModel === name) chatModel = installedModels[0] ?? '';
+				// If we deleted the active model and other models are available, auto-switch
+				if (wasConfigured && installedModels.length > 0) {
+					const fallback = installedModels[0];
+					try {
+						const sw = await fetch('/admin/api/ollama/switch', {
+							method: 'POST',
+							headers: { 'Content-Type': 'application/json' },
+							body: JSON.stringify({ model: fallback }),
+						});
+						if (sw.ok) configuredModel = fallback;
+					} catch { /* non-fatal */ }
+				}
 			} else {
 				const err = await res.json().catch(() => ({}));
 				deleteError = err.detail ?? `HTTP ${res.status}`;
@@ -426,55 +455,109 @@
 		chatLoading = true;
 		chatResponse = '';
 		chatError = null;
+		chatVerdict = null;
+		chatVerdictError = null;
 		const msg = chatMessage;
-		let receivedTokens = false;
 		try {
-			const res = await fetch('/admin/api/install/ollama/chat', {
+			// Load model temporarily without writing to .env
+			const switchRes = await fetch('/admin/api/ollama/switch', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ model: chatModel, message: msg }),
+				body: JSON.stringify({ model: chatModel, persist: false }),
 			});
-			if (!res.ok) {
-				const err = await res.json().catch(() => ({}));
-				throw new Error(err.detail ?? `HTTP ${res.status}`);
+			if (!switchRes.ok) {
+				const err = await switchRes.json().catch(() => ({}));
+				throw new Error(err.detail ?? `Load failed: HTTP ${switchRes.status}`);
 			}
-			if (!res.body) throw new Error('No response body');
-			const reader = res.body.getReader();
-			const decoder = new TextDecoder();
-			let buf = '';
-			loop: while (true) {
-				const { done, value } = await reader.read();
-				if (done) break;
-				buf += decoder.decode(value, { stream: true });
-				const lines = buf.split('\n');
-				buf = lines.pop() ?? '';
-				for (const line of lines) {
-					if (!line.startsWith('data: ')) continue;
-					const raw = line.slice(6).trim();
-					if (!raw) continue;
-					try {
-						const chunk = JSON.parse(raw) as Record<string, unknown>;
-						if (chunk.error) { chatError = String(chunk.error); break loop; }
-						if (chunk.done) break loop;
-						if (chunk.token) { chatResponse += String(chunk.token); receivedTokens = true; }
-					} catch { /* skip */ }
-				}
+
+			// Send through the real HouseBot pipeline
+			const msgRes = await fetch('/message', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ sender: '__admin_test__', text: msg }),
+			});
+			if (!msgRes.ok) {
+				const err = await msgRes.json().catch(() => ({}));
+				throw new Error(err.detail ?? `HTTP ${msgRes.status}`);
 			}
-			if (!receivedTokens && !chatError) {
-				chatError = 'No response — FastAPI may need a restart after recent changes.';
-			}
-			// If the test succeeded, persist this model as the configured one
-			if (receivedTokens && !chatError) {
-				fetch('/admin/api/ollama/switch', {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ model: chatModel }),
-				}).then(r => { if (r.ok) configuredModel = chatModel; }).catch(() => {});
+			const data = await msgRes.json();
+			const reply = data.reply ?? null;
+
+			if (!reply) {
+				chatError = 'No reply received — the model may be incompatible with HouseBot.';
+			} else {
+				chatResponse = reply;
 			}
 		} catch (e) {
 			chatError = e instanceof Error ? e.message : String(e);
 		} finally {
 			chatLoading = false;
+		}
+	}
+
+	async function loadModel(name: string) {
+		loadingModel = name;
+		loadModelError = null;
+		try {
+			const res = await fetch('/admin/api/ollama/switch', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ model: name, persist: true }),
+			});
+			if (!res.ok) {
+				const err = await res.json().catch(() => ({}));
+				throw new Error((err as { detail?: string }).detail ?? `HTTP ${res.status}`);
+			}
+			configuredModel = name;
+			await loadInstalledModels();
+		} catch (e) {
+			loadModelError = e instanceof Error ? e.message : String(e);
+		} finally {
+			loadingModel = null;
+		}
+	}
+
+	async function markVerified() {
+		chatVerdictLoading = true;
+		chatVerdictError = null;
+		try {
+			await fetch('/admin/api/ollama/tested', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ model: chatModel }),
+			});
+			chatVerdict = 'verified';
+			await loadInstalledModels();
+		} catch (e) {
+			chatVerdictError = e instanceof Error ? e.message : String(e);
+		} finally {
+			chatVerdictLoading = false;
+		}
+	}
+
+	async function markIncompatible() {
+		chatVerdictLoading = true;
+		chatVerdictError = null;
+		try {
+			await fetch('/admin/api/ollama/incompatible', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ model: chatModel }),
+			});
+			// Restore the originally configured model in-memory
+			if (configuredModel && configuredModel !== chatModel) {
+				await fetch('/admin/api/ollama/switch', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ model: configuredModel, persist: false }),
+				});
+			}
+			chatVerdict = 'rejected';
+			await loadInstalledModels();
+		} catch (e) {
+			chatVerdictError = e instanceof Error ? e.message : String(e);
+		} finally {
+			chatVerdictLoading = false;
 		}
 	}
 
@@ -1225,12 +1308,12 @@
 		</div>
 
 		<!-- ── Step 1: Ollama — AI Models (interactive) ──────────────────────────── -->
-		<div class="card bg-surface-50-950 border border-surface-200-800 rounded-xl overflow-hidden">
+		<div class="card bg-surface-50-950 border border-surface-200-800 rounded-xl">
 
 			<!-- Accordion header -->
 			<button
 				onclick={toggleStep1}
-				class="w-full p-4 flex items-center gap-4 text-left hover:bg-surface-100-900/50 transition-colors"
+				class="w-full p-4 flex items-center gap-4 text-left hover:bg-surface-100-900/50 transition-colors rounded-xl"
 			>
 				<div class="w-9 h-9 rounded-full bg-surface-100-900 border border-surface-200-800 flex items-center justify-center text-lg shrink-0">
 					🧠
@@ -1273,43 +1356,76 @@
 									<div class="flex items-center gap-2 flex-wrap">
 										<span class="text-xs font-mono font-semibold">{model.name}</span>
 										{#if isLoaded}
-											<span class="px-1.5 py-0.5 rounded text-xs bg-primary-500/15 text-primary-400">active</span>
-										{:else}
-											<span class="px-1.5 py-0.5 rounded text-xs bg-success-500/15 text-success-400">installed</span>
+											<span class="px-1.5 py-0.5 rounded text-xs bg-primary-500/15 text-primary-400">loaded</span>
 										{/if}
 									</div>
 									<p class="text-xs text-surface-400-600 mt-0.5">
 										{model.params || model.family || ''}
 										{#if model.size_gb > 0} · {model.size_gb} GB on disk{/if}
 									</p>
+									{#if model.tested}
+										<p class="text-[10px] mt-0.5 font-medium text-success-400">✓ tested</p>
+									{:else if model.incompatible}
+										<p class="text-[10px] mt-0.5 font-medium text-error-400">✖ rejected</p>
+									{:else}
+										<p class="text-[10px] mt-0.5 text-surface-400-600/60">untested</p>
+									{/if}
 								</div>
 								<!-- Delete controls -->
 								{#if isPendingDelete}
-									<div class="flex items-center gap-2 shrink-0">
-										<span class="text-xs text-error-400">Delete?</span>
-										<button
-											onclick={() => deleteModel(model.name)}
-											disabled={isDeleting}
-											class="px-2 py-1 rounded text-xs font-medium bg-error-500/20 text-error-400
-											hover:bg-error-500/30 border border-error-500/40 transition-colors disabled:opacity-40"
-										>Yes</button>
-										<button
-											onclick={() => pendingDeleteModel = null}
-											class="px-2 py-1 rounded text-xs font-medium border border-surface-300-700
-											text-surface-500-500 hover:bg-surface-100-900 transition-colors"
-										>No</button>
+									{@const noFallback = isLoaded && installedModelDetails.length === 1}
+									<div class="flex flex-col items-end gap-1.5 shrink-0">
+										{#if noFallback}
+											<span class="text-[10px] text-warning-500 text-right max-w-[200px] leading-tight">
+												⚠️ No other model available — the bot will stop working.
+											</span>
+										{:else if isLoaded}
+											<span class="text-[10px] text-surface-400-600 text-right max-w-[200px] leading-tight">
+												Active model — will switch to {installedModelDetails.find(m => m.name !== model.name)?.name ?? 'next available'}.
+											</span>
+										{/if}
+										<div class="flex items-center gap-2">
+											<span class="text-xs text-error-400">Delete?</span>
+											<button
+												onclick={() => deleteModel(model.name)}
+												disabled={isDeleting}
+												class="px-2 py-1 rounded text-xs font-medium bg-error-500/20 text-error-400
+												hover:bg-error-500/30 border border-error-500/40 transition-colors disabled:opacity-40"
+											>Yes</button>
+											<button
+												onclick={() => pendingDeleteModel = null}
+												class="px-2 py-1 rounded text-xs font-medium border border-surface-300-700
+												text-surface-500-500 hover:bg-surface-100-900 transition-colors"
+											>No</button>
+										</div>
 									</div>
 								{:else}
-									<button
-										onclick={() => pendingDeleteModel = model.name}
-										disabled={isDeleting || !!deletingModel}
-										title="Remove model from local disk"
-										class="shrink-0 px-2 py-1.5 rounded-lg text-xs font-medium border border-surface-300-700
-										text-surface-500-500 hover:border-error-500/40 hover:text-error-400 hover:bg-error-500/5
-										transition-colors disabled:opacity-40"
-									>
-										{isDeleting ? '…' : '🗑'}
-									</button>
+									<div class="flex items-center gap-1 shrink-0">
+										{#if !isLoaded}
+											<button
+												onclick={() => loadModel(model.name)}
+												disabled={!!loadingModel || !!deletingModel}
+												title="Load this model as active"
+												class="flex flex-col items-center px-2 py-1 rounded-lg border border-surface-300-700
+												text-surface-500-500 hover:border-primary-500/40 hover:text-primary-400 hover:bg-primary-500/5
+												transition-colors disabled:opacity-40"
+											>
+												<span class="text-xs leading-none">{loadingModel === model.name ? '…' : '▶'}</span>
+												<span class="text-[9px] leading-none mt-0.5">load</span>
+											</button>
+										{/if}
+										<button
+											onclick={() => pendingDeleteModel = model.name}
+											disabled={isDeleting || !!deletingModel || !!loadingModel}
+											title="Remove model from local disk"
+											class="flex flex-col items-center px-2 py-1 rounded-lg border border-surface-300-700
+											text-surface-500-500 hover:border-error-500/40 hover:text-error-400 hover:bg-error-500/5
+											transition-colors disabled:opacity-40"
+										>
+											<span class="text-xs leading-none">{isDeleting ? '…' : '🗑'}</span>
+											<span class="text-[9px] leading-none mt-0.5">delete</span>
+										</button>
+									</div>
 								{/if}
 							</div>
 						{/each}
@@ -1317,11 +1433,159 @@
 						{#if deleteError}
 							<p class="text-xs text-error-400">❌ {deleteError}</p>
 						{/if}
+						{#if loadModelError}
+							<p class="text-xs text-error-400">❌ {loadModelError}</p>
+						{/if}
+					</div>
+
+					{#if installedModels.length > 0}
+						<div class="space-y-3 pt-3 border-t border-surface-200-800">
+							<div>
+								<p class="text-xs font-semibold text-surface-400-600 uppercase tracking-wide">Load and Test the Model with HouseBot</p>
+								<p class="text-xs text-surface-400-600 mt-1">Send a real command (e.g. <em>weather today</em>, <em>add milk</em>) and check the reply makes sense.<br/>Then mark the model as tested or rejected. Use "▶ load" in the list above to load a tested model.</p>
+							</div>
+
+							<!-- Model selector -->
+							<div class="flex items-center gap-2">
+								<label for="chat-model" class="text-xs text-surface-400-600 shrink-0">Model:</label>
+								<select
+									id="chat-model"
+									bind:value={chatModel}
+									class="flex-1 text-xs rounded-lg px-2 py-1.5 bg-surface-100-900 border border-surface-200-800
+									       text-surface-900-50 focus:outline-none focus:border-primary-500/60"
+								>
+									{#each installedModels as m}
+										<option value={m}>{m}</option>
+									{/each}
+								</select>
+							</div>
+
+							<!-- Input + send -->
+							<div class="flex gap-2">
+								<input
+									type="text"
+									bind:value={chatMessage}
+									placeholder="Ask something…"
+									onkeydown={(e) => { if (e.key === 'Enter') sendChat(); }}
+									class="flex-1 text-xs rounded-lg px-3 py-2 bg-surface-100-900 border border-surface-200-800
+									       text-surface-900-50 placeholder:text-surface-400-600
+									       focus:outline-none focus:border-primary-500/60"
+								/>
+								<button
+									onclick={sendChat}
+									disabled={chatLoading || !chatMessage.trim()}
+									class="shrink-0 px-3 py-2 rounded-lg text-xs font-medium bg-primary-500/20 text-primary-400
+									       hover:bg-primary-500/30 transition-colors disabled:opacity-40"
+								>
+									{chatLoading ? '…' : 'Send'}
+								</button>
+							</div>
+
+							<!-- Response -->
+							{#if chatResponse !== ''}
+								<div class="px-3 py-2 rounded-lg bg-surface-100-900 border border-surface-200-800 max-h-48 overflow-y-auto">
+									<p class="text-xs text-surface-400-600 whitespace-pre-wrap break-words">{chatResponse}</p>
+								</div>
+								<!-- Verdict buttons -->
+								{#if chatVerdict === null && !chatVerdictLoading}
+									<div class="flex gap-2 pt-1">
+										<button
+											onclick={markVerified}
+											disabled={chatVerdictLoading}
+											class="flex-1 px-3 py-1.5 rounded-lg text-xs font-semibold border border-success-500 bg-success-500/40 text-black hover:bg-success-500/60 transition-colors disabled:opacity-40"
+										>
+											✓ Mark as Tested
+										</button>
+										<button
+											onclick={markIncompatible}
+											disabled={chatVerdictLoading}
+											class="flex-1 px-3 py-1.5 rounded-lg text-xs font-semibold border border-error-500 bg-error-500/40 text-black hover:bg-error-500/60 transition-colors disabled:opacity-40"
+										>
+											✖ Mark as Rejected
+										</button>
+									</div>
+								{:else if chatVerdict === "verified"}
+									<div class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-success-500/10 border border-success-500/30">
+										<span class="text-success-400 text-xs">✓ Model marked as tested. Use ▶ on the card above to set it as active.</span>
+									</div>
+								{:else if chatVerdict === "rejected"}
+									<div class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-error-500/10 border border-error-500/30">
+										<span class="text-error-400 text-xs">✖ Model marked as rejected.</span>
+									</div>
+								{:else if chatVerdictLoading}
+									<p class="text-xs text-surface-400-600"><span class="animate-pulse">…</span></p>
+								{/if}
+								{#if chatVerdictError}
+									<p class="text-xs text-error-400">{chatVerdictError}</p>
+								{/if}
+							{:else if chatLoading}
+								<div class="px-3 py-2 rounded-lg bg-surface-100-900 border border-surface-200-800">
+									<p class="text-xs text-surface-400-600">Loading model and processing<span class="animate-pulse">…</span> <span class="text-surface-400-600/60">(first request only after the keep-alive expires, takes {chatLoadEstimate}{ramGb ? ` on your ${ramGb} GB machine` : ''})</span></p>
+								</div>
+							{/if}
+							{#if chatError}
+								<p class="text-xs text-error-400">{chatError}</p>
+							{/if}
+						</div>
+					{/if}
+
+					<!-- Keep-alive setting -->
+					<div class="space-y-3 pt-3 border-t border-surface-200-800">
+						<div>
+							<p class="text-xs font-semibold text-surface-400-600 uppercase tracking-wide">Model keep-alive</p>
+							<p class="text-xs text-surface-400-600 mt-1">
+								Ollama unloads the model from RAM after a period of inactivity.
+								A longer keep-alive means faster responses but higher constant memory usage.
+								Set to <span class="font-mono">-1</span> to never unload
+								or leave at the default <span class="font-mono">5m</span> to free RAM when idle.
+							</p>
+						</div>
+						<div class="flex flex-wrap gap-2">
+							{#each KEEP_ALIVE_PRESETS as preset}
+								{@const isActive = keepAliveValue === preset.value || (preset.value === '5m' && !keepAliveValue)}
+								<button
+									title={preset.desc}
+									onclick={() => saveKeepAlive(preset.value)}
+									disabled={keepAliveSaving}
+									class="px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors disabled:opacity-40
+										{isActive
+											? 'border-primary-500/60 bg-primary-500/15 text-primary-400'
+											: 'border-surface-300-700 text-surface-500-500 hover:bg-surface-100-900'}"
+								>
+									{preset.label}
+								</button>
+							{/each}
+						</div>
+						<div class="flex items-center gap-3">
+							<p class="text-xs text-surface-400-600">
+								Current: <span class="font-mono text-surface-900-50">{keepAliveValue || '5m (default)'}</span>
+							</p>
+							{#if keepAliveSaved}
+								<span class="text-xs text-success-400">✓ Saved to .env</span>
+							{/if}
+						</div>
+						{#if keepAliveError}
+							<p class="text-xs text-error-400">❌ {keepAliveError}</p>
+						{/if}
+						<p class="text-xs text-surface-400-600/70">
+							⚠️ A restart of HouseBot is required for this change to take effect.
+						</p>
+						{#if pendingRestart}
+							<button
+								onclick={restartFastapi}
+								disabled={restarting}
+								class="self-start px-4 py-2 rounded-lg text-xs font-semibold bg-warning-500/20 text-warning-400
+								       border border-warning-500/40 hover:bg-warning-500/30 transition-colors disabled:opacity-50"
+							>
+								{restarting ? 'Restarting…' : '🔄 Restart HouseBot now'}
+							</button>
+						{/if}
 					</div>
 
 					<!-- ── Install new model ─────────────────────────────────────────── -->
 					<div class="space-y-3 pt-3 border-t border-surface-200-800">
 						<p class="text-xs font-semibold text-surface-400-600 uppercase tracking-wide">Install a new model</p>
+						<p class="text-xs text-surface-400-600">HouseBot handles simple, structured commands — intent classification, not reasoning. Small models (4b–8b parameters) are sufficient and will give faster response times.</p>
 
 						<div class="relative" bind:this={comboboxEl}>
 							<div class="flex gap-2">
@@ -1419,7 +1683,7 @@
 						{#if pullDone && !pullingModel}
 							<div class="flex items-center gap-2 px-3 py-2 rounded-lg bg-success-500/10 border border-success-500/30">
 								<span>✅</span>
-								<p class="text-xs text-success-400">Model pulled successfully — you can test it below.</p>
+								<p class="text-xs text-success-400">Model pulled successfully — you can test it above.</p>
 							</div>
 						{/if}
 						{#if pullError && !pullingModel}
@@ -1435,117 +1699,6 @@
 								class="text-primary-400 hover:underline">Browse the full Ollama library →</a>
 						</p>
 					</div>
-
-					<!-- Keep-alive setting -->
-					<div class="space-y-3 pt-3 border-t border-surface-200-800">
-						<div>
-							<p class="text-xs font-semibold text-surface-400-600 uppercase tracking-wide">Model keep-alive</p>
-							<p class="text-xs text-surface-400-600 mt-1">
-								Ollama unloads the model from RAM after a period of inactivity.
-								A longer keep-alive means faster responses but higher constant memory usage.
-								Set to <span class="font-mono">-1</span> to never unload
-								or leave at the default <span class="font-mono">5m</span> to free RAM when idle.
-							</p>
-						</div>
-						<div class="flex flex-wrap gap-2">
-							{#each KEEP_ALIVE_PRESETS as preset}
-								{@const isActive = keepAliveValue === preset.value || (preset.value === '5m' && !keepAliveValue)}
-								<button
-									title={preset.desc}
-									onclick={() => saveKeepAlive(preset.value)}
-									disabled={keepAliveSaving}
-									class="px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors disabled:opacity-40
-										{isActive
-											? 'border-primary-500/60 bg-primary-500/15 text-primary-400'
-											: 'border-surface-300-700 text-surface-500-500 hover:bg-surface-100-900'}"
-								>
-									{preset.label}
-								</button>
-							{/each}
-						</div>
-						<div class="flex items-center gap-3">
-							<p class="text-xs text-surface-400-600">
-								Current: <span class="font-mono text-surface-900-50">{keepAliveValue || '5m (default)'}</span>
-							</p>
-							{#if keepAliveSaved}
-								<span class="text-xs text-success-400">✓ Saved to .env</span>
-							{/if}
-						</div>
-						{#if keepAliveError}
-							<p class="text-xs text-error-400">❌ {keepAliveError}</p>
-						{/if}
-						<p class="text-xs text-surface-400-600/70">
-							⚠️ A restart of HouseBot is required for this change to take effect.
-						</p>
-						{#if pendingRestart}
-							<button
-								onclick={restartFastapi}
-								disabled={restarting}
-								class="self-start px-4 py-2 rounded-lg text-xs font-semibold bg-warning-500/20 text-warning-400
-								       border border-warning-500/40 hover:bg-warning-500/30 transition-colors disabled:opacity-50"
-							>
-								{restarting ? 'Restarting…' : '🔄 Restart HouseBot now'}
-							</button>
-						{/if}
-					</div>
-
-					<!-- Chat test -->
-					{#if installedModels.length > 0}
-						<div class="space-y-3 pt-3 border-t border-surface-200-800">
-							<p class="text-xs font-semibold text-surface-400-600 uppercase tracking-wide">Test the model</p>
-
-							<!-- Model selector -->
-							<div class="flex items-center gap-2">
-								<label for="chat-model" class="text-xs text-surface-400-600 shrink-0">Model:</label>
-								<select
-									id="chat-model"
-									bind:value={chatModel}
-									class="flex-1 text-xs rounded-lg px-2 py-1.5 bg-surface-100-900 border border-surface-200-800
-									       text-surface-900-50 focus:outline-none focus:border-primary-500/60"
-								>
-									{#each installedModels as m}
-										<option value={m}>{m}</option>
-									{/each}
-								</select>
-							</div>
-
-							<!-- Input + send -->
-							<div class="flex gap-2">
-								<input
-									type="text"
-									bind:value={chatMessage}
-									placeholder="Ask something…"
-									onkeydown={(e) => { if (e.key === 'Enter') sendChat(); }}
-									class="flex-1 text-xs rounded-lg px-3 py-2 bg-surface-100-900 border border-surface-200-800
-									       text-surface-900-50 placeholder:text-surface-400-600
-									       focus:outline-none focus:border-primary-500/60"
-								/>
-								<button
-									onclick={sendChat}
-									disabled={chatLoading || !chatMessage.trim()}
-									class="shrink-0 px-3 py-2 rounded-lg text-xs font-medium bg-primary-500/20 text-primary-400
-									       hover:bg-primary-500/30 transition-colors disabled:opacity-40"
-								>
-									{chatLoading ? '…' : 'Send'}
-								</button>
-							</div>
-
-							<!-- Response -->
-							{#if chatResponse !== ''}
-								<div class="px-3 py-2 rounded-lg bg-surface-100-900 border border-surface-200-800 max-h-48 overflow-y-auto">
-									<p class="text-xs text-surface-400-600 whitespace-pre-wrap break-words">{chatResponse}{#if chatLoading}<span class="animate-pulse">▋</span>{/if}</p>
-								</div>
-							{:else if chatLoading}
-								<div class="px-3 py-2 rounded-lg bg-surface-100-900 border border-surface-200-800">
-									<p class="text-xs text-surface-400-600">Loading model<span class="animate-pulse">…</span> <span class="text-surface-400-600/60">(first request only after the keep-alive expires, takes {chatLoadEstimate}{ramGb ? ` on your ${ramGb} GB machine` : ''})</span></p>
-								</div>
-							{/if}
-							{#if chatError}
-								<p class="text-xs text-error-400">Error: {chatError}</p>
-							{/if}
-						</div>
-					{/if}
-
 				</div>
 			{/if}
 		</div>

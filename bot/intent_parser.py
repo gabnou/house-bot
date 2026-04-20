@@ -33,12 +33,12 @@ def classify_intent_category(text: str) -> str | None:
         "Classify the following message into one of these categories: shopping, weather, calendar.\n"
         "The message may be a translation from another language and may not start with the exact keyword, "
         "but its intent should clearly relate to one of these domains:\n"
-        "- **shopping**: buying groceries, adding/removing items from a shopping list, "
+        "- shopping: buying groceries, adding/removing items from a shopping list, "
         "what to buy, provisions, supplies, supermarket, store.\n"
-        "- **weather**: forecast, temperature, rain, sun, wind, climate, meteorology, conditions.\n"
-        "- **calendar**: events, appointments, schedule, agenda, meetings, dates, reminders.\n\n"
-        "If the message clearly belongs to one of these, respond ONLY with the category name "
-        "(shopping, weather, or calendar). If it does not clearly belong to any, respond with \"none\".\n\n"
+        "- weather: forecast, temperature, rain, sun, wind, climate, meteorology, conditions.\n"
+        "- calendar: events, appointments, schedule, agenda, meetings, dates, reminders.\n\n"
+        "Respond with exactly one word — no punctuation, no markdown, no explanation: "
+        "shopping, weather, calendar, or none.\n\n"
         f"Message: \"{text}\"\nCategory:"
     )
     try:
@@ -48,7 +48,9 @@ def classify_intent_category(text: str) -> str | None:
             "stream": False,
             "options": {"temperature": 0, "num_predict": 10},
         }, timeout=15)
-        answer = response.json().get("response", "").strip().lower().strip('"').strip()
+        raw = response.json().get("response", "").strip().lower()
+        # Strip markdown formatting (e.g. **shopping** → shopping) and stray punctuation
+        answer = re.sub(r'[*_`#]', '', raw).strip().strip('"').strip("'").strip()
         logger.debug("🏷️ classify_intent_category → '%s' for: %s", answer, text)
         if answer in ("shopping", "weather", "calendar"):
             return answer
@@ -168,9 +170,10 @@ def translate_from_english(text: str, target_language: str) -> str | None:
     """Translate an English response to the target language using the LLM."""
     prompt = (
         f"Translate the following English text to {target_language}. "
-        "Respond ONLY with the translation, nothing else. "
-        "Do NOT translate proper nouns, personal names, or event titles — keep them exactly as they appear in the original text.\n\n"
-        f"Text: \"{text}\"\nTranslation:"
+        "Output ONLY the translated text — no explanations, no notes, no comments, no parenthetical remarks, no quotation marks around the output. "
+        "Translate ALL words including: grocery items, food items, household products, common words, and command keywords. "
+        "The ONLY exceptions (keep exactly as in the original): personal names (people's names), geographical place names, and calendar event titles.\n\n"
+        f"Text:\n{text}\n\nTranslation:"
     )
     try:
         response = requests.post(OLLAMA_URL, json={
@@ -179,7 +182,7 @@ def translate_from_english(text: str, target_language: str) -> str | None:
             "stream": False,
             "options": {"temperature": 0.1},
         }, timeout=60)
-        result = response.json().get("response", "").strip().strip('"')
+        result = response.json().get("response", "").strip().strip('"').strip()
         logger.debug("🌐 translate_from_english → %s", result)
         return result if result else None
     except Exception as e:
@@ -231,10 +234,10 @@ def parse_intent(text: str) -> dict:
         t1 = time.time()
         response = requests.post(OLLAMA_URL, json=payload, timeout=120)
         t2 = time.time()
-        logger.debug("⏱️ Ollama HTTP call: %.2fs", t2 - t1)
+        logger.debug("⏱️ Ollama HTTP call (%s): %.2fs", MODEL, t2 - t1)
         response.raise_for_status()
         raw = response.json()["response"].strip()
-        logger.debug("🧠 Ollama raw response: %s", raw)
+        logger.debug("🧠 Ollama raw response (%s): %s", MODEL, raw)
         return _parse_raw(raw)
     except Exception as e:
         logger.error("Error in parse_intent: %s", e)

@@ -69,11 +69,14 @@ Every inbound message follows this exact sequence — **one LLM call, one action
 Incoming message
       │
       ▼
+ pre_route()  ── identity/help regex only (no LLM) ──► action dict
+      │ (miss)
+      ▼
  language detection + translation (LLM, only if non-English)
       │
       ▼
- pre_route()  ──── fast regex match (no LLM) ───► action dict
-      │ (miss)
+ detect_category() / classify_intent_category()  ──► prepend keyword
+      │
       ▼
  parse_intent()  ── LLM call → JSON {"action": "...", ...} ──► action dict
       │
@@ -178,7 +181,7 @@ When the installer finishes, open **[http://localhost:8000/install](http://local
 
 | Step | What it does |
 |---|---|
-| **1. Ollama — AI Models** | Choose and pull a local LLM model; set the keep-alive timeout; test the model with a chat prompt |
+| **1. Ollama — AI Models** | Choose and pull a local LLM model; set the keep-alive timeout; test the model through the real HouseBot pipeline and mark it as tested (sets it active) or incompatible |
 | **2. Google OAuth** | Authorize Google Calendar access and store the OAuth token (requires `creds/client_google_api_calendar.json` from Google Cloud Console) |
 | **3. WhatsApp Pairing** | Scan the QR code to link the dedicated WhatsApp number; set the linked-device display name (`WHATSAPP_APPNAME`) |
 | **4. Sender Restrictions** | Send a message from each partner's phone, scan for it here, and authorize the JID — saved automatically to `.env` |

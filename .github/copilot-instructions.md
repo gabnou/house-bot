@@ -33,11 +33,14 @@ Every inbound message follows this exact sequence. **There is no LLM reasoning l
 Incoming message
       │
       ▼
+ pre_route()  ── identity/help regex only (no LLM) ──►  action dict
+      │ (miss)
+      ▼
  language detection + translation (LLM, only if non-English)
       │
       ▼
- pre_route()  ──── fast regex match (no LLM) ──►  action dict
-      │ (miss)
+ detect_category() / classify_intent_category()  ──► prepend keyword
+      │
       ▼
  parse_intent()  ── LLM call → JSON {"action": "...", ...} ──►  action dict
       │
@@ -75,7 +78,7 @@ ui/build/     → production bundle served statically by FastAPI at /
 
 ### `bot/main.py` — FastAPI Server (entry point)
 - **Endpoints**: `POST /message` (main handler), `POST /transcribe` (audio→text), `POST /broadcast` (send to all partners)
-- **Message flow**: `pre_route()` (fast regex) → `parse_intent()` (LLM fallback) → `orchestrator.handle_intent()` → reply
+- **Message flow**: `pre_route()` (identity/help only, no LLM) → language detection + translation → `detect_category()` / `classify_intent_category()` → `parse_intent()` (LLM) → `orchestrator.handle_intent()` → reply
 - **Language fallback**: `detect_language()` → `translate_to_english()` → re-parse → `classify_intent_category()` → process → `translate_from_english()` response
 - **Whisper model** loaded at startup via lifespan event; auto-detects language (no hardcoded `language=` param)
 
@@ -164,7 +167,9 @@ All endpoints are under `/admin/api/` and registered on the FastAPI app in `bot/
 - `GET  /admin/api/logs` — last N lines per service log file
 - `GET  /admin/api/ollama/models` — list locally available Ollama models
 - `GET  /admin/api/ollama/active` — currently loaded model (in-memory)
-- `POST /admin/api/ollama/switch` — switch active model (updates `OLLAMA_MODEL` in env)
+- `POST /admin/api/ollama/switch` — switch active model; optional `persist: bool` (default `true`) — when `false`, updates only the in-memory `intent_parser.MODEL` without writing `.env` (used for test loads)
+- `POST /admin/api/ollama/tested` — mark a model as tested/compatible; saved to `bot/tested_models.json`; also removes from incompatible store
+- `POST /admin/api/ollama/incompatible` — mark a model as incompatible; saved to `bot/incompatible_models.json`
 - `POST /admin/api/services/{service}/restart|stop|start` — control fastapi/bridge/scheduler
 - `POST /admin/api/services/restart-all` / `stop-all` — bulk service control
 - `GET  /admin/api/prompts/{skill}` — get prompt text (override file or built-in)
@@ -187,14 +192,14 @@ All endpoints are under `/admin/api/` and registered on the FastAPI app in `bot/
 - **Tailwind v4**: `@variant dark (&:where(.dark, .dark *));` in `app.css` is required for class-based dark mode (v4 defaults to media query)
 - **Dark mode**: `.dark` class on `<html>` toggled via `localStorage` key `'colorMode'`. Both layout and home page keep a `toggleMode()` that syncs `classList` + storage
 - **Adapter**: `adapter-static`, `fallback: 'index.html'`, builds to `ui/build/`. SSR disabled via `ui/src/routes/+layout.ts` (`ssr = false`, `prerender = false`)
-- **Vite**: port 5252, `host: 'localhost'`. Proxy `/admin/api` → `:8000` with 503 JSON error handler
+- **Vite**: port 5252, `host: 'localhost'`. Proxy `/admin/api` and `/message` → `:8000`; 503 JSON error handler on `/admin/api`
 - **Git info**: baked at build time in `vite.config.ts` via Vite `define` — `__GIT_HASH__`, `__GIT_DATE__`, `__GIT_BRANCH__`, `__GIT_COMMIT_URL__`. Displayed as a badge in the page footer (all pages)
 - **Pages**:
   - `/` — home: logo, quick-link grid, dark/light toggle, CTA to install wizard
   - `/status` — live health cards (FastAPI/Ollama/Bridge), config table, log viewer with per-service tabs and 4s auto-refresh
   - `/admin` — service control (per-service Restart/Stop/Start + bulk actions) + model manager (real model list, switch button) + Google Account (Create Token, Re-authorize, Refresh Token, Token Status, Revoke Token)
   - `/prompts` — live prompt editor per skill (load/save/reset, `customised` badge when override file exists)
-  - `/config` — grouped `.env` editor (placeholder)
+  - `/config` — Ollama model management: installed models list (with tested/incompatible/untested badges), "Load and Test the Model with HouseBot" section (routes through real `POST /message` pipeline; verdict buttons mark model as tested or incompatible), keep-alive setting, model catalog with pull
   - `/install` — installation wizard; Step 1 (Ollama) and Step 2 (Google OAuth) are interactive accordions; Steps 3–6 are static placeholders
 - **Layout** (`ui/src/routes/+layout.svelte`): sidebar (60-wide, nav items, dark toggle in footer), topbar hidden on `/`, main content area with git badge footer
 - All API calls use `fetch('/admin/api/...')` — never absolute URLs
@@ -209,10 +214,12 @@ All endpoints are under `/admin/api/` and registered on the FastAPI app in `bot/
 ## Key Patterns
 
 ### Intent Detection Pipeline
-1. `detect_category(text)` — fast keyword/fuzzy match on first word
-2. `pre_route(text)` — regex patterns for common intents (bought, remove, show, add, calendar today)
-3. `parse_intent(text)` — full LLM call with category-specific prompt from the skill's registered prompt builder
-4. For multi-language: `detect_language()` → translate → re-run pipeline → `classify_intent_category()` as keyword affinity fallback → translate reply back
+1. `pre_route(text)` — regex for **identity** and **help** only. Returns `None` for all other input. Domain-specific patterns (shopping, calendar, weather) were removed — they caused cross-domain false positives, especially on translated text.
+2. `detect_language()` → if non-English, `translate_to_english()` → re-run `pre_route()` on the translated text
+3. `detect_category(text)` — keyword/fuzzy match on first word (`shopping`, `calendar`, `weather`)
+4. If no category: `classify_intent_category(text)` — LLM semantic fallback; prepends the detected category keyword
+5. `parse_intent(text)` — LLM call with the category-specific prompt
+6. `translate_from_english(reply, lang)` — translate reply back if the original was non-English
 
 ### Why No LLM Loop
 HouseBot intentionally avoids a reasoning loop (ReAct / tool-chaining). One message → one LLM call → one tool → one reply. This is the right trade-off for a household bot with simple, direct requests: it keeps latency low, output deterministic, and the system easy to debug. Multi-step agentic chains would add hallucination risk and complexity without benefit for this use case.
@@ -264,6 +271,8 @@ All config is in `.env` (see `.env.example`). Key variables:
 - Skeleton UI CSS must be imported with relative `../node_modules/...` paths in `app.css`
 - No external cloud services except: Open-Meteo (free), Google Calendar API, WhatsApp (Meta)
 - **StaticFiles mount order is critical**: `app.mount("/", StaticFiles(...))` must be the very last line in `bot/main.py`. Starlette resolves routes in registration order — mounting at `/` before route decorators causes `StaticFiles` to intercept all requests (POST included) and return 405.
+- **Model compatibility tracking**: `bot/tested_models.json` and `bot/incompatible_models.json` store user-confirmed verdicts. The Config page "Load and Test" section calls `POST /message` with `sender: '__admin_test__'` so the full pipeline is exercised. The user then explicitly marks the model as tested (persists to `.env`, sets active) or incompatible (records it, restores previous model in-memory). Marking as tested also removes from the incompatible store.
+- **`ollama/switch` with `persist: false`**: loads the model and updates `intent_parser.MODEL` in-memory without writing `.env`. Safe for test loads — the configured model is not silently changed until the user confirms.
 - **Google OAuth local callback**: the flow runs a `wsgiref.simple_server` on port 8787 in a daemon thread. `OAUTHLIB_INSECURE_TRANSPORT=1` must be set because the redirect URI is `http://` (localhost only — safe). Token is saved to `creds/token.json`. The status endpoint auto-refreshes an expired token if a `refresh_token` is present, matching `calendar_handler.get_service()` behaviour.
 
 ## Copilot Agent Behaviours
@@ -271,7 +280,8 @@ All config is in `.env` (see `.env.example`). Key variables:
 - When editing a file, use the editor tools to make precise changes — do not reproduce the entire file unless asked.
 - If a file cannot be edited via tools, ask the user to do it — do not create external scripts as a workaround.
 - Always find simple solutions that do not require new dependencies or complex refactors. If a change is needed across multiple files explain it clearly and seek for approvals before proceeding.
-- Before answering any prompt, always check the grammar and spelling of my input. If you find errors, provide a brief 'Proofread' section at the beginning of your response with the corrected text.
+- The first step of processing any prompt is ALWAYS a proofread.
 - After executing and testing code changes, provide the option to commit the changes in git with a clear commit message. Do not commit without asking.
+- When editing `.svelte` files (or any file with tab indentation), always `read_file` the exact target lines first, then use that verbatim text in `replace_string_in_file`. Never hand-construct indented strings from memory — tab vs space mismatches will silently fail the match. Do NOT fall back to running a Python script as a workaround.
 
 

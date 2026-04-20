@@ -359,7 +359,6 @@ def get_morning_briefing() -> str:
         uv_warn = " — use sunscreen! 🧴" if uv and uv >= 6 else ""
         logger.debug("[weather] get_morning_briefing: Open-Meteo")
         return (
-            f"☀️ *Good morning from House-Bot!*\n\n"
             f"🌍 *{DEFAULT_CITY} — Today*\n"
             f"{desc}\n\n"
             f"🌡️ Now: {current_temp}°C\n"
