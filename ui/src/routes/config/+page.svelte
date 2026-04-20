@@ -122,7 +122,7 @@
 	let chatResponse = $state('');
 	let chatLoading = $state(false);
 	let chatError = $state<string | null>(null);
-	let chatVerdict = $state<'verified' | 'incompatible' | null>(null);
+	let chatVerdict = $state<'verified' | 'rejected' | null>(null);
 	let chatVerdictLoading = $state(false);
 	let chatVerdictError = $state<string | null>(null);
 
@@ -552,7 +552,7 @@
 					body: JSON.stringify({ model: configuredModel, persist: false }),
 				});
 			}
-			chatVerdict = 'incompatible';
+			chatVerdict = 'rejected';
 			await loadInstalledModels();
 		} catch (e) {
 			chatVerdictError = e instanceof Error ? e.message : String(e);
@@ -1366,7 +1366,7 @@
 									{#if model.tested}
 										<p class="text-[10px] mt-0.5 font-medium text-success-400">✓ tested</p>
 									{:else if model.incompatible}
-										<p class="text-[10px] mt-0.5 font-medium text-warning-400">⚠ incompatible</p>
+										<p class="text-[10px] mt-0.5 font-medium text-error-400">✖ rejected</p>
 									{:else}
 										<p class="text-[10px] mt-0.5 text-surface-400-600/60">untested</p>
 									{/if}
@@ -1400,16 +1400,32 @@
 										</div>
 									</div>
 								{:else}
-									<button
-										onclick={() => pendingDeleteModel = model.name}
-										disabled={isDeleting || !!deletingModel}
-										title="Remove model from local disk"
-										class="shrink-0 px-2 py-1.5 rounded-lg text-xs font-medium border border-surface-300-700
-										text-surface-500-500 hover:border-error-500/40 hover:text-error-400 hover:bg-error-500/5
-										transition-colors disabled:opacity-40"
-									>
-										{isDeleting ? '…' : '🗑'}
-									</button>
+									<div class="flex items-center gap-1 shrink-0">
+										{#if !isLoaded}
+											<button
+												onclick={() => loadModel(model.name)}
+												disabled={!!loadingModel || !!deletingModel}
+												title="Load this model as active"
+												class="flex flex-col items-center px-2 py-1 rounded-lg border border-surface-300-700
+												text-surface-500-500 hover:border-primary-500/40 hover:text-primary-400 hover:bg-primary-500/5
+												transition-colors disabled:opacity-40"
+											>
+												<span class="text-xs leading-none">{loadingModel === model.name ? '…' : '▶'}</span>
+												<span class="text-[9px] leading-none mt-0.5">load</span>
+											</button>
+										{/if}
+										<button
+											onclick={() => pendingDeleteModel = model.name}
+											disabled={isDeleting || !!deletingModel || !!loadingModel}
+											title="Remove model from local disk"
+											class="flex flex-col items-center px-2 py-1 rounded-lg border border-surface-300-700
+											text-surface-500-500 hover:border-error-500/40 hover:text-error-400 hover:bg-error-500/5
+											transition-colors disabled:opacity-40"
+										>
+											<span class="text-xs leading-none">{isDeleting ? '…' : '🗑'}</span>
+											<span class="text-[9px] leading-none mt-0.5">delete</span>
+										</button>
+									</div>
 								{/if}
 							</div>
 						{/each}
@@ -1426,7 +1442,7 @@
 						<div class="space-y-3 pt-3 border-t border-surface-200-800">
 							<div>
 								<p class="text-xs font-semibold text-surface-400-600 uppercase tracking-wide">Load and Test the Model with HouseBot</p>
-								<p class="text-xs text-surface-400-600 mt-1">Select a model and send a real bot command (e.g. <em>weather today</em>, <em>add milk</em>). You can use any language and verify the reply is meaningful and correct.<br>An unexpected or empty reply means the model may be incompatible.<br>Marking a model as tested will set it as active. Otherwise it will be marked as incompatible.</p>
+								<p class="text-xs text-surface-400-600 mt-1">Send a real command (e.g. <em>weather today</em>, <em>add milk</em>) and check the reply makes sense.<br/>Then mark the model as tested or rejected. Use "▶ load" in the list above to load a tested model.</p>
 							</div>
 
 							<!-- Model selector -->
@@ -1476,25 +1492,25 @@
 										<button
 											onclick={markVerified}
 											disabled={chatVerdictLoading}
-											class="flex-1 px-3 py-1.5 rounded-lg text-xs font-medium bg-success-500/15 text-success-400 hover:bg-success-500/25 transition-colors disabled:opacity-40"
+											class="flex-1 px-3 py-1.5 rounded-lg text-xs font-semibold border border-success-500 bg-success-500/40 text-black hover:bg-success-500/60 transition-colors disabled:opacity-40"
 										>
-											✓ Tested
+											✓ Mark as Tested
 										</button>
 										<button
 											onclick={markIncompatible}
 											disabled={chatVerdictLoading}
-											class="flex-1 px-3 py-1.5 rounded-lg text-xs font-medium bg-warning-500/10 text-warning-400 hover:bg-warning-500/20 transition-colors disabled:opacity-40"
+											class="flex-1 px-3 py-1.5 rounded-lg text-xs font-semibold border border-error-500 bg-error-500/40 text-black hover:bg-error-500/60 transition-colors disabled:opacity-40"
 										>
-											✖ Incompatible
+											✖ Mark as Rejected
 										</button>
 									</div>
 								{:else if chatVerdict === "verified"}
 									<div class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-success-500/10 border border-success-500/30">
 										<span class="text-success-400 text-xs">✓ Model marked as tested. Use ▶ on the card above to set it as active.</span>
 									</div>
-								{:else if chatVerdict === "incompatible"}
-									<div class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-warning-500/10 border border-warning-500/30">
-										<span class="text-warning-400 text-xs">⚠ Model marked as incompatible.</span>
+								{:else if chatVerdict === "rejected"}
+									<div class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-error-500/10 border border-error-500/30">
+										<span class="text-error-400 text-xs">✖ Model marked as rejected.</span>
 									</div>
 								{:else if chatVerdictLoading}
 									<p class="text-xs text-surface-400-600"><span class="animate-pulse">…</span></p>
@@ -1569,6 +1585,7 @@
 					<!-- ── Install new model ─────────────────────────────────────────── -->
 					<div class="space-y-3 pt-3 border-t border-surface-200-800">
 						<p class="text-xs font-semibold text-surface-400-600 uppercase tracking-wide">Install a new model</p>
+						<p class="text-xs text-surface-400-600">HouseBot handles simple, structured commands — intent classification, not reasoning. Small models (4b–8b parameters) are sufficient and will give faster response times.</p>
 
 						<div class="relative" bind:this={comboboxEl}>
 							<div class="flex gap-2">

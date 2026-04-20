@@ -282,5 +282,6 @@ All config is in `.env` (see `.env.example`). Key variables:
 - Always find simple solutions that do not require new dependencies or complex refactors. If a change is needed across multiple files explain it clearly and seek for approvals before proceeding.
 - The first step of processing any prompt is ALWAYS a proofread.
 - After executing and testing code changes, provide the option to commit the changes in git with a clear commit message. Do not commit without asking.
+- When editing `.svelte` files (or any file with tab indentation), always `read_file` the exact target lines first, then use that verbatim text in `replace_string_in_file`. Never hand-construct indented strings from memory — tab vs space mismatches will silently fail the match. Do NOT fall back to running a Python script as a workaround.
 
 

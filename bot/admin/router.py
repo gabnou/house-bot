@@ -564,6 +564,11 @@ def _save_tested_model(model: str) -> None:
     tested.add(model)
     _TESTED_MODELS_FILE.write_text(json.dumps(sorted(tested), indent=2), encoding="utf-8")
 
+def _remove_tested_model(model: str) -> None:
+    tested = _load_tested_models()
+    tested.discard(model)
+    _TESTED_MODELS_FILE.write_text(json.dumps(sorted(tested), indent=2), encoding="utf-8")
+
 def _load_incompatible_models() -> set[str]:
     try:
         return set(json.loads(_INCOMPATIBLE_MODELS_FILE.read_text(encoding="utf-8")))
@@ -638,6 +643,7 @@ async def ollama_mark_incompatible(req: MarkIncompatibleRequest):
     if not model:
         raise HTTPException(status_code=400, detail="model name is required")
     _save_incompatible_model(model)
+    _remove_tested_model(model)  # un-flag if previously marked tested
     logger.info("⚠️ Model marked as incompatible: %s", model)
     return JSONResponse(content={"ok": True, "model": model, "incompatible": sorted(_load_incompatible_models())})
 
