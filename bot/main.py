@@ -184,7 +184,8 @@ async def handle_message(msg: Message):
                     logger.info("🏷️ Classified as '%s' — prepending keyword", classified)
                     effective_text = f"{classified} {effective_text}"
 
-            logger.debug("🤖 Sending to Ollama: '%s'", effective_text)
+            from intent_parser import MODEL as _active_model
+            logger.debug("🤖 Sending to Ollama (%s): '%s'", _active_model, effective_text)
             intent = parse_intent(effective_text)
 
     action = intent.get("action", "unknown")
@@ -264,6 +265,8 @@ async def handle_message(msg: Message):
         translated_reply = translate_from_english(reply, detected_lang)
         if translated_reply:
             reply = translated_reply
+        else:
+            logger.warning("⚠️ Back-translation to %s failed — reply sent in English", detected_lang)
 
     return {"reply": reply, "notification": notification}
 

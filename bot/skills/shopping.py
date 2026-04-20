@@ -1,3 +1,4 @@
+import re
 from typing import List, Optional, Any, Dict
 from pydantic import BaseModel
 
@@ -41,6 +42,34 @@ class ShowIn(BaseModel):
     category: Optional[str] = None
 
 
+_STOP_WORDS = {"for", "the", "a", "an", "of", "to", "and", "or", "with", "in", "on", "some"}
+
+
+def _word_overlap_score(query: str, candidate: str) -> float:
+    """Word-token overlap between two strings.
+    Handles translation variants (e.g. 'detergent for dishwashers' vs 'dishwasher detergent').
+    Partial prefix matching (min 4 chars) covers plurals and inflections.
+    Returns a score 0.0–1.0 (fraction of meaningful words that match)."""
+    def tokens(s: str) -> set:
+        return set(re.findall(r'\w+', s.lower())) - _STOP_WORDS
+
+    wa = tokens(query)
+    wb = tokens(candidate)
+    if not wa or not wb:
+        return 0.0
+    matches = sum(
+        1 for w in wa
+        if any(
+            w == v or (
+                len(w) >= 4 and len(v) >= 4
+                and (w.startswith(v[:4]) or v.startswith(w[:4]))
+            )
+            for v in wb
+        )
+    )
+    return matches / max(len(wa), len(wb))
+
+
 def _format_result_with_list(messages: List[str]) -> Dict[str, Any]:
     result = "\n".join(messages)
     updated = show_list()
@@ -76,7 +105,27 @@ def remove_items_tool(payload: dict) -> Dict[str, Any]:
     else:
         return {"ok": False, "message": "No item names provided to remove."}
 
-    messages = [remove_item(n) for n in names]
+    pending = get_pending_items()
+    messages = []
+    for n in names:
+        res = remove_item(n)
+        if not res.startswith("⚠️"):
+            messages.append(res)
+            continue
+        # Fuzzy fallback 1: bidirectional substring
+        # e.g. "milk" matches "whole milk" AND "whole milk" matches "milk"
+        matched = [p for p in pending if n.lower() in p.lower() or p.lower() in n.lower()]
+        if matched:
+            messages.append(remove_item(matched[0]))
+            continue
+        # Fuzzy fallback 2: word-token overlap (handles translated forms)
+        # e.g. "detergent for dishwashers" → "dishwasher detergent"
+        matched_overlap = [p for p in pending if _word_overlap_score(n, p) >= 0.5]
+        if matched_overlap:
+            messages.append(remove_item(matched_overlap[0]))
+            continue
+        messages.append(res)
+
     return _format_result_with_list(messages)
 
 
@@ -99,10 +148,15 @@ def bought_items_tool(payload: dict) -> Dict[str, Any]:
         if res.startswith("✅"):
             messages.append(res)
             continue
-        # If not found, try fuzzy matching by exact substring (fallback)
-        matched = [p for p in pending if it.name.lower() in p.lower()]
+        # Fuzzy fallback 1: bidirectional substring
+        matched = [p for p in pending if it.name.lower() in p.lower() or p.lower() in it.name.lower()]
         if matched:
             messages.append(mark_bought(matched[0]))
+            continue
+        # Fuzzy fallback 2: word-token overlap (handles translated forms)
+        matched_overlap = [p for p in pending if _word_overlap_score(it.name, p) >= 0.5]
+        if matched_overlap:
+            messages.append(mark_bought(matched_overlap[0]))
             continue
         # Otherwise add and mark as bought
         messages.append(add_and_mark_bought(it.name, it.category or "other"))
@@ -171,7 +225,7 @@ def prompt() -> str:
 
 Available actions:
 - add: adds items. {\"action\": \"add\", \"items\": [{\"name\": \"...\", \"category\": \"...\"}]}
-- remove: removes items from the list. {\"action\": \"remove\"}
+- remove: removes items from the list. {\"action\": \"remove\", \"names\": [\"...\"]}
 - bought: marks items as bought. {\"action\": \"bought\", \"items\": [{\"name\": \"...\", \"category\": \"...\"}]}
 - show: shows the list. {\"action\": \"show\", \"category\": null|\"food\"|\"other\"|\"clothing\"|\"health\"}
 - clear: clears the entire list. {\"action\": \"clear\"}
@@ -202,7 +256,10 @@ Message: \"shopping what's missing for food?\"
 Response: {\"action\": \"show\", \"category\": \"food\"}
 
 Message: \"shopping remove the bread\"
-Response: {\"action\": \"remove\"}
+Response: {\"action\": \"remove\", \"names\": [\"bread\"]}
+
+Message: \"shopping remove eggs and butter\"
+Response: {\"action\": \"remove\", \"names\": [\"eggs\", \"butter\"]}
 
 Message: \"shopping I bought milk and bread\"
 Response: {\"action\": \"bought\", \"items\": [{\"name\": \"milk\", \"category\": \"food\"}, {\"name\": \"bread\", \"category\": \"food\"}]}
