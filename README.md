@@ -18,7 +18,9 @@ Domestic WhatsApp bot for shared management of a shopping list between multiple 
 
 **Multi-language support:** The bot expects English as the default language, but it can communicate in any language — including voice messages. When a text or audio message is not understood, the bot uses the LLM to detect the source language. If a non-English language is identified, the message is automatically translated to English, processed through the normal command pipeline, and the response is translated back into the detected language. This makes the bot accessible to users in any language without additional configuration. Note that language detection and translation require multiple LLM calls, which will noticeably slow down response times on machines with limited RAM where the model cannot stay fully loaded in memory.
 
-**WhatsApp number and Personal BOT:** For multi-partner use, HouseBot requires a dedicated WhatsApp phone number (SIM card) to act as the bot. All partners interact with the bot via this number. For single-user scenarios, you may register your own WhatsApp number and interact with HouseBot through your personal self-chat, enabling all features without a separate SIM.
+**WhatsApp number:** HouseBot needs a WhatsApp number to act as the bot.
+- **Multi-partner use** — a dedicated phone number (separate SIM card) is required so all partners can message the bot. Each partner is individually authorized via the Installation Wizard.
+- **Personal use** — no extra SIM needed. You can link your own WhatsApp number and interact with the bot through self-chat (messaging yourself), giving you full access to all features from a single device.
 
 ---
 
@@ -37,7 +39,7 @@ Domestic WhatsApp bot for shared management of a shopping list between multiple 
 ## Prerequisites
 
 - A Mac running macOS (Homebrew, Python, Node.js and Ollama are installed automatically)
-- A dedicated WhatsApp number (separate SIM, or your own number for single-user)
+- A WhatsApp number for the bot — a **dedicated SIM** for multi-partner setups, or your **own number** for personal single-user use
 - A Google account
 
 ---

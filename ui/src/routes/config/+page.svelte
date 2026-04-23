@@ -2108,7 +2108,7 @@
 						<!-- QR code -->
 						<div class="flex flex-col items-center gap-3">
 							<p class="text-xs text-surface-400-600 text-center">
-								Open WhatsApp on the <strong>dedicated number's phone</strong> → Linked Devices → Link a device, then scan:
+								Open WhatsApp on the <strong>bot number's phone</strong> → Linked Devices → Link a device, then scan:
 							</p>
 							<div class="p-3 rounded-xl bg-white shadow-md inline-block">
 								<img src={waQr} alt="WhatsApp QR code" width="264" height="264" class="block rounded-lg" />

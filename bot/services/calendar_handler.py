@@ -23,7 +23,10 @@ TOKEN_PATH = os.getenv(
     'GOOGLE_TOKEN_PATH',
     str(PROJECT_ROOT / 'creds' / 'token.json')
 )
-CALENDAR_NAME = os.getenv('GOOGLE_CALENDAR_NAME', 'Familia')
+def _calendar_name() -> str:
+    """Read GOOGLE_CALENDAR_NAME dynamically so UI changes take effect immediately."""
+    return os.getenv('GOOGLE_CALENDAR_NAME', 'Familia')
+
 TIMEZONE = os.getenv('CALENDAR_TIMEZONE', 'Europe/Madrid')
 
 MONTHS = ['', 'January', 'February', 'March', 'April', 'May', 'June',
@@ -77,7 +80,7 @@ def get_calendar_id() -> str:
     service = get_service()
     calendars = service.calendarList().list().execute()
     for cal in calendars.get('items', []):
-        if cal['summary'].lower() == CALENDAR_NAME.lower():
+        if cal['summary'].lower() == _calendar_name().lower():
             return cal['id']
     return 'primary'
 
@@ -103,12 +106,12 @@ def show_events(days: int = 1, offset_days: int = 0) -> str:
 
         if not events:
             if offset_days == 1:
-                return f"📅 No events tomorrow in calendar {CALENDAR_NAME}."
+                return f"📅 No events tomorrow in calendar {_calendar_name()}."
             elif offset_days == 2:
-                return f"📅 No events the day after tomorrow in calendar {CALENDAR_NAME}."
+                return f"📅 No events the day after tomorrow in calendar {_calendar_name()}."
             else:
                 period = "today" if days == 1 else f"in the next {days} days"
-                return f"📅 No events {period} in calendar {CALENDAR_NAME}."
+                return f"📅 No events {period} in calendar {_calendar_name()}."
 
         if offset_days == 1:
             period = "Tomorrow"
@@ -119,7 +122,7 @@ def show_events(days: int = 1, offset_days: int = 0) -> str:
         else:
             period = f"Next {days} days"
 
-        lines = [f"📅 *{CALENDAR_NAME} — {period}*\n"]
+        lines = [f"📅 *{_calendar_name()} — {period}*\n"]
         for e in events:
             start_str = e['start'].get('dateTime', e['start'].get('date', ''))
             try:
@@ -160,9 +163,9 @@ def show_events_period(start_date: str, end_date: str) -> str:
         period_title = _format_period_title(start_date, end_date)
 
         if not events:
-            return f"📅 No events — {period_title} in calendar {CALENDAR_NAME}."
+            return f"📅 No events — {period_title} in calendar {_calendar_name()}."
 
-        lines = [f"📅 *{CALENDAR_NAME} — {period_title}*\n"]
+        lines = [f"📅 *{_calendar_name()} — {period_title}*\n"]
         for e in events:
             start_str = e['start'].get('dateTime', e['start'].get('date', ''))
             try:
