@@ -436,6 +436,8 @@ async def ollama_upgrade():
 # ── HouseBot Software Update ─────────────────────────────────────────────────
 
 _GITHUB_REPO = "gabnou/house-bot"
+_RELEASE_FILE = _PROJECT_ROOT / "release.json"
+
 
 def _git(*args: str) -> str:
     """Run a git command in PROJECT_ROOT and return stdout (stripped)."""
@@ -448,67 +450,75 @@ def _git(*args: str) -> str:
 
 @router.get("/housebot/version")
 async def housebot_version():
-    """Return the current git tag and latest GitHub release tag."""
+    """Return the installed version and latest GitHub release.
+
+    Two states only:
+    - source = "release"  → release.json present (installed from a release zip or upgraded)
+    - source = "git"      → release.json absent  (running from a git clone)
+    """
+    import json as _json
     import requests as _req
 
-    # Current tag (exact tag if on one, otherwise latest reachable tag)
     installed: str | None = None
-    try:
-        installed = _git("describe", "--tags", "--exact-match") or None
-    except Exception:
-        pass
-    if not installed:
-        try:
-            installed = _git("describe", "--tags", "--abbrev=0") or None
-        except Exception:
-            pass
+    installed_source: str | None = None
 
-    # Latest tag from GitHub — try releases first, fall back to tags list
-    latest: str | None = None
+    # ── Release install ───────────────────────────────────────────────────────
     try:
-        r = _req.get(
-            f"https://api.github.com/repos/{_GITHUB_REPO}/releases/latest",
-            headers={"Accept": "application/vnd.github.v3+json"},
-            timeout=8,
-        )
-        if r.status_code == 200:
-            latest = r.json().get("tag_name") or None
+        with open(_RELEASE_FILE) as rf:
+            data = _json.load(rf)
+            installed = data.get("version") or None
+            if installed:
+                installed_source = "release"
     except Exception:
         pass
-    if not latest:
-        # Fall back to the tags API (sorted by newest first server-side)
+
+    # ── Git clone fallback ────────────────────────────────────────────────────
+    if not installed:
+        installed_source = "git"
+        try:
+            commit = _git("log", "-1", "--format=%h") or None
+            branch = _git("rev-parse", "--abbrev-ref", "HEAD") or None
+            if commit:
+                installed = f"{branch}@{commit}" if branch and branch != "HEAD" else commit
+        except Exception:
+            installed = "unknown"
+
+    # ── Latest GitHub release (only relevant for release installs) ────────────
+    latest: str | None = None
+    update_available = False
+    if installed_source == "release":
         try:
             r = _req.get(
-                f"https://api.github.com/repos/{_GITHUB_REPO}/tags",
+                f"https://api.github.com/repos/{_GITHUB_REPO}/releases",
                 headers={"Accept": "application/vnd.github.v3+json"},
+                params={"per_page": 10},
                 timeout=8,
             )
             if r.status_code == 200:
-                tags = r.json()
-                if tags:
-                    latest = tags[0].get("name") or None
+                releases = [rel for rel in r.json() if not rel.get("draft") and not rel.get("prerelease")]
+                if releases:
+                    latest = releases[0].get("tag_name") or None
         except Exception:
             pass
 
-    update_available = False
-    if installed and latest and installed != latest:
-        # Compare using tuple of date-like or semver parts
-        def _tag_key(t: str) -> tuple:
-            parts = t.lstrip("v").replace("-", ".").split(".")
-            nums = []
-            for p in parts:
-                try:
-                    nums.append(int(p))
-                except ValueError:
-                    nums.append(0)
-            return tuple(nums)
-        try:
-            update_available = _tag_key(latest) > _tag_key(installed)
-        except Exception:
-            update_available = installed != latest
+        if installed and latest and installed != latest:
+            def _tag_key(t: str) -> tuple:
+                parts = t.lstrip("v").replace("-", ".").split(".")
+                nums = []
+                for p in parts:
+                    try:
+                        nums.append(int(p))
+                    except ValueError:
+                        nums.append(0)
+                return tuple(nums)
+            try:
+                update_available = _tag_key(latest) > _tag_key(installed)
+            except Exception:
+                update_available = installed != latest
 
     return JSONResponse(content={
         "installed": installed,
+        "installed_source": installed_source,
         "latest": latest,
         "update_available": update_available,
         "repo_url": f"https://github.com/{_GITHUB_REPO}",
@@ -526,9 +536,32 @@ async def housebot_upgrade_status():
         return JSONResponse(content=dict(_hb_upgrade_state))
 
 
+# Paths (relative to PROJECT_ROOT) that must never be overwritten by an upgrade.
+# These hold user data, secrets, runtime state, and local config.
+_HB_PRESERVE = {
+    ".env",
+    "creds",
+    "logs",
+    "bridge/baileys_auth",
+    "bot/services/db",
+    "bot/ollama_models.json",
+}
+
+
+def _hb_preserve(rel_path: str) -> bool:
+    """Return True if rel_path (forward-slash, relative to project root) should be preserved."""
+    from pathlib import PurePosixPath
+    p = PurePosixPath(rel_path)
+    for preserved in _HB_PRESERVE:
+        pres = PurePosixPath(preserved)
+        if p == pres or p.parts[:len(pres.parts)] == pres.parts:
+            return True
+    return False
+
+
 @router.post("/housebot/upgrade")
 async def housebot_upgrade():
-    """Upgrade HouseBot: fetch latest tag, checkout, ui-build, restart."""
+    """Upgrade HouseBot: download release zip, apply files, rebuild UI, restart."""
     import requests as _req
 
     with _hb_upgrade_lock:
@@ -536,8 +569,9 @@ async def housebot_upgrade():
             return JSONResponse(content={"ok": False, "message": "Upgrade already in progress."})
         _hb_upgrade_state.update({"status": "running", "log": [], "exit_code": None})
 
-    # Resolve the latest tag before starting the thread — releases first, tags fallback
+    # Resolve the latest release from GitHub (releases only)
     latest_tag: str | None = None
+    zipball_url: str | None = None
     try:
         r = _req.get(
             f"https://api.github.com/repos/{_GITHUB_REPO}/releases/latest",
@@ -545,33 +579,22 @@ async def housebot_upgrade():
             timeout=8,
         )
         if r.status_code == 200:
-            latest_tag = r.json().get("tag_name") or None
+            release = r.json()
+            latest_tag = release.get("tag_name") or None
+            zipball_url = release.get("zipball_url") or None
     except Exception:
         pass
-    if not latest_tag:
-        try:
-            r = _req.get(
-                f"https://api.github.com/repos/{_GITHUB_REPO}/tags",
-                headers={"Accept": "application/vnd.github.v3+json"},
-                timeout=8,
-            )
-            if r.status_code == 200:
-                tags = r.json()
-                if tags:
-                    latest_tag = tags[0].get("name") or None
-        except Exception:
-            pass
 
-    if not latest_tag:
+    if not latest_tag or not zipball_url:
         with _hb_upgrade_lock:
-            _hb_upgrade_state.update({"status": "failed", "log": ["Could not resolve latest release tag from GitHub."], "exit_code": 1})
-        return JSONResponse(content={"ok": False, "message": "Could not resolve latest release tag."})
+            _hb_upgrade_state.update({"status": "failed", "log": ["No GitHub release found."], "exit_code": 1})
+        return JSONResponse(content={"ok": False, "message": "No GitHub release found."})
 
     def _log(msg: str):
         with _hb_upgrade_lock:
             _hb_upgrade_state["log"].append(msg)
-            if len(_hb_upgrade_state["log"]) > 100:
-                _hb_upgrade_state["log"] = _hb_upgrade_state["log"][-100:]
+            if len(_hb_upgrade_state["log"]) > 200:
+                _hb_upgrade_state["log"] = _hb_upgrade_state["log"][-200:]
 
     def _run_step(cmd: list[str], cwd: str | None = None) -> int:
         proc = subprocess.Popen(
@@ -585,17 +608,78 @@ async def housebot_upgrade():
         return proc.returncode
 
     def _do_hb_upgrade():
+        import tempfile
+        import zipfile
+        import shutil
+        import requests as _req2
+
         try:
-            _log(f"→ Fetching tags from origin…")
-            rc = _run_step(["git", "fetch", "--tags", "--force"])
-            if rc != 0:
-                raise RuntimeError(f"git fetch failed (exit {rc})")
+            # 1. Download the release zip
+            _log(f"→ Downloading {latest_tag} from GitHub…")
+            resp = _req2.get(zipball_url, stream=True, timeout=120, allow_redirects=True)
+            resp.raise_for_status()
 
-            _log(f"→ Checking out {latest_tag}…")
-            rc = _run_step(["git", "checkout", latest_tag])
-            if rc != 0:
-                raise RuntimeError(f"git checkout {latest_tag} failed (exit {rc})")
+            with tempfile.TemporaryDirectory() as tmpdir:
+                zip_path = f"{tmpdir}/release.zip"
+                total = 0
+                with open(zip_path, "wb") as fz:
+                    for chunk in resp.iter_content(chunk_size=65536):
+                        fz.write(chunk)
+                        total += len(chunk)
+                _log(f"  Downloaded {total // 1024} KB")
 
+                # 2. Extract
+                _log("→ Extracting…")
+                with zipfile.ZipFile(zip_path) as zf:
+                    zf.extractall(tmpdir)
+
+                # GitHub zips contain a single root dir: owner-repo-shortsha/
+                candidates = [
+                    d for d in os.listdir(tmpdir)
+                    if os.path.isdir(os.path.join(tmpdir, d)) and d != "__MACOSX"
+                ]
+                if not candidates:
+                    raise RuntimeError("Could not find extracted directory in zip")
+                src_root = os.path.join(tmpdir, candidates[0])
+
+                # 3. Copy files to PROJECT_ROOT, skipping preserved paths
+                _log("→ Applying update (preserving .env, creds, logs, DB, auth)…")
+                copied = skipped = 0
+                for dirpath, dirnames, filenames in os.walk(src_root):
+                    # Normalise rel_dir to forward-slash
+                    rel_dir = os.path.relpath(dirpath, src_root).replace(os.sep, "/")
+                    if rel_dir == ".":
+                        rel_dir = ""
+                    for filename in filenames:
+                        rel_path = f"{rel_dir}/{filename}" if rel_dir else filename
+                        if _hb_preserve(rel_path):
+                            skipped += 1
+                            continue
+                        src_file = os.path.join(dirpath, filename)
+                        dst_file = str(_PROJECT_ROOT / rel_path.replace("/", os.sep))
+                        os.makedirs(os.path.dirname(dst_file), exist_ok=True)
+                        shutil.copy2(src_file, dst_file)
+                        copied += 1
+                _log(f"  {copied} files updated, {skipped} preserved")
+
+                # 3b. Write release.json to record the installed version
+                import json as _json2
+                from datetime import datetime, timezone
+                with open(str(_PROJECT_ROOT / "release.json"), "w") as rf:
+                    _json2.dump(
+                        {"version": latest_tag, "installed_at": datetime.now(timezone.utc).isoformat()},
+                        rf,
+                    )
+                _log(f"  Release recorded as {latest_tag}")
+
+            # 4. Install/update Python dependencies
+            _log("→ Installing Python dependencies…")
+            rc = _run_step([_VENV_PYTHON, "-m", "pip", "install", "-r",
+                            str(_PROJECT_ROOT / "requirements.txt"), "-q"])
+            if rc != 0:
+                raise RuntimeError(f"pip install failed (exit {rc})")
+
+            # 5. Build UI
             _log("→ Building UI…")
             rc = _run_step(["bash", _HOUSEBOT_SH, "ui-build"])
             if rc != 0:
@@ -605,7 +689,7 @@ async def housebot_upgrade():
             with _hb_upgrade_lock:
                 _hb_upgrade_state.update({"status": "done", "exit_code": 0})
 
-            # Detached restart — housebot.sh will kill this process
+            # Detached restart
             subprocess.Popen(
                 ["bash", "-c", f"sleep 3 && bash '{_HOUSEBOT_SH}' restart"],
                 close_fds=True, start_new_session=True,
@@ -744,41 +828,88 @@ _OLLAMA_STATIC_CATALOG = [
     {"id": "orca-mini:7b",         "family": "Orca",        "description": "Orca Mini 7B",                                             "ram": "~4 GB"},
 ]
 
-# ── Tested models store ───────────────────────────────────────────────────────
-_TESTED_MODELS_FILE = _PROJECT_ROOT / "bot" / "tested_models.json"
-_INCOMPATIBLE_MODELS_FILE = _PROJECT_ROOT / "bot" / "incompatible_models.json"
+# ── Ollama model verdicts store ───────────────────────────────────────────────
+# Single file: bot/ollama_models.json  {"tested": [...], "incompatible": [...]}
+# Migrates automatically from the old split-file format on first read.
+
+_OLLAMA_MODELS_FILE = _PROJECT_ROOT / "bot" / "ollama_models.json"
+_OLD_TESTED_FILE = _PROJECT_ROOT / "bot" / "tested_models.json"
+_OLD_INCOMPATIBLE_FILE = _PROJECT_ROOT / "bot" / "incompatible_models.json"
+
+
+def _load_ollama_models() -> dict[str, set[str]]:
+    """Load verdict store, migrating from old split files if needed."""
+    # Auto-migrate from old split files (runs once)
+    if not _OLLAMA_MODELS_FILE.exists() and (_OLD_TESTED_FILE.exists() or _OLD_INCOMPATIBLE_FILE.exists()):
+        tested: set[str] = set()
+        incompatible: set[str] = set()
+        try:
+            tested = set(json.loads(_OLD_TESTED_FILE.read_text(encoding="utf-8")))
+        except Exception:
+            pass
+        try:
+            incompatible = set(json.loads(_OLD_INCOMPATIBLE_FILE.read_text(encoding="utf-8")))
+        except Exception:
+            pass
+        _save_ollama_models({"tested": tested, "incompatible": incompatible})
+        # Remove old files
+        for f in (_OLD_TESTED_FILE, _OLD_INCOMPATIBLE_FILE):
+            try:
+                f.unlink()
+            except Exception:
+                pass
+
+    try:
+        raw = json.loads(_OLLAMA_MODELS_FILE.read_text(encoding="utf-8"))
+        return {
+            "tested": set(raw.get("tested", [])),
+            "incompatible": set(raw.get("incompatible", [])),
+        }
+    except Exception:
+        return {"tested": set(), "incompatible": set()}
+
+
+def _save_ollama_models(store: dict[str, set[str]]) -> None:
+    _OLLAMA_MODELS_FILE.write_text(
+        json.dumps(
+            {"tested": sorted(store["tested"]), "incompatible": sorted(store["incompatible"])},
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
 
 def _load_tested_models() -> set[str]:
-    try:
-        return set(json.loads(_TESTED_MODELS_FILE.read_text(encoding="utf-8")))
-    except Exception:
-        return set()
+    return _load_ollama_models()["tested"]
 
-def _save_tested_model(model: str) -> None:
-    tested = _load_tested_models()
-    tested.add(model)
-    _TESTED_MODELS_FILE.write_text(json.dumps(sorted(tested), indent=2), encoding="utf-8")
-
-def _remove_tested_model(model: str) -> None:
-    tested = _load_tested_models()
-    tested.discard(model)
-    _TESTED_MODELS_FILE.write_text(json.dumps(sorted(tested), indent=2), encoding="utf-8")
 
 def _load_incompatible_models() -> set[str]:
-    try:
-        return set(json.loads(_INCOMPATIBLE_MODELS_FILE.read_text(encoding="utf-8")))
-    except Exception:
-        return set()
+    return _load_ollama_models()["incompatible"]
+
+
+def _save_tested_model(model: str) -> None:
+    store = _load_ollama_models()
+    store["tested"].add(model)
+    _save_ollama_models(store)
+
+
+def _remove_tested_model(model: str) -> None:
+    store = _load_ollama_models()
+    store["tested"].discard(model)
+    _save_ollama_models(store)
+
 
 def _save_incompatible_model(model: str) -> None:
-    incompatible = _load_incompatible_models()
-    incompatible.add(model)
-    _INCOMPATIBLE_MODELS_FILE.write_text(json.dumps(sorted(incompatible), indent=2), encoding="utf-8")
+    store = _load_ollama_models()
+    store["incompatible"].add(model)
+    _save_ollama_models(store)
+
 
 def _remove_incompatible_model(model: str) -> None:
-    incompatible = _load_incompatible_models()
-    incompatible.discard(model)
-    _INCOMPATIBLE_MODELS_FILE.write_text(json.dumps(sorted(incompatible), indent=2), encoding="utf-8")
+    store = _load_ollama_models()
+    store["incompatible"].discard(model)
+    _save_ollama_models(store)
+
 
 def _is_compatible(model_name: str) -> bool:
     return True  # kept for API compatibility; removed hardcoded rules

@@ -181,6 +181,7 @@
 
 	// ── HouseBot Software Update state ─────────────────────────────────────
 	let hbInstalledTag = $state<string | null>(null);
+	let hbInstalledSource = $state<string | null>(null); // 'release' | 'git-tag' | 'git-dev' | null
 	let hbLatestTag = $state<string | null>(null);
 	let hbUpdateAvailable = $state<boolean | null>(null);
 	let hbVersionBusy = $state(false);
@@ -209,6 +210,7 @@
 				if (hbUpgradeStatus === 'done') {
 					hbUpdateAvailable = null;
 					hbInstalledTag = null;
+					hbInstalledSource = null;
 					hbLatestTag = null;
 				}
 			}
@@ -222,6 +224,7 @@
 			if (res.ok) {
 				const data = await res.json();
 				hbInstalledTag = data.installed ?? null;
+				hbInstalledSource = data.installed_source ?? null;
 				hbLatestTag = data.latest ?? null;
 				hbUpdateAvailable = data.update_available ?? false;
 				hbRepoUrl = data.repo_url ?? hbRepoUrl;
@@ -553,17 +556,23 @@
 			<div class="flex items-center gap-3 px-4 py-3 rounded-xl border
 				{hbInstalledTag === null
 					? 'border-surface-200-800 bg-surface-100-900/50'
-					: hbUpdateAvailable
-						? 'border-warning-500/40 bg-warning-500/5'
-						: 'border-success-500/40 bg-success-500/5'}">
+					: hbInstalledSource === 'git'
+						? 'border-surface-300-700 bg-surface-100-900/50'
+						: hbUpdateAvailable
+							? 'border-warning-500/40 bg-warning-500/5'
+							: 'border-success-500/40 bg-success-500/5'}">
 				<div class="w-2.5 h-2.5 rounded-full shrink-0
 					{hbInstalledTag === null
 						? 'bg-surface-400-600'
-						: hbUpdateAvailable ? 'bg-warning-400' : 'bg-success-500'}"></div>
+						: hbInstalledSource === 'git'
+							? 'bg-surface-400-600'
+							: hbUpdateAvailable ? 'bg-warning-400' : 'bg-success-500'}"></div>
 				<div class="flex-1">
 					<p class="text-xs font-semibold">
 						{#if hbInstalledTag === null}
-							{hbVersionBusy ? 'Checking version…' : 'Release version'}
+							{hbVersionBusy ? 'Checking version…' : 'Checking version…'}
+						{:else if hbInstalledSource === 'git'}
+							🛠 Running from git clone — no release version
 						{:else if hbUpdateAvailable}
 							⚠️ Update available
 						{:else}
@@ -572,13 +581,15 @@
 					</p>
 					{#if hbInstalledTag}
 						<p class="text-[10px] text-surface-400-600 mt-0.5">
-							{hbUpdateAvailable && hbLatestTag
-								? `${hbInstalledTag} → ${hbLatestTag}`
-								: hbInstalledTag}
+							{hbInstalledSource === 'git'
+								? hbInstalledTag
+								: hbUpdateAvailable && hbLatestTag
+									? `${hbInstalledTag} → ${hbLatestTag}`
+									: hbInstalledTag}
 						</p>
 					{/if}
 				</div>
-				{#if hbUpdateAvailable}
+				{#if hbUpdateAvailable && hbInstalledSource === 'release'}
 					<button
 						onclick={upgradeHousebot}
 						disabled={hbUpgradeStatus === 'running'}

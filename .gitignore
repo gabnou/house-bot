@@ -6,6 +6,7 @@ creds/
 bridge/baileys_auth/
 bot/services/db/shoppinglist.db
 logs/
+release.json
 .venv/
 venv/
 __pycache__/

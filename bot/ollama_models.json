@@ -1,0 +1,12 @@
+{
+  "tested": [
+    "llama3.1:8b",
+    "mistral-small:22b",
+    "phi4-mini:3.8b"
+  ],
+  "incompatible": [
+    "deepseek-r1:1.5b",
+    "llama3.1:8b",
+    "phi4-mini:3.8b"
+  ]
+}

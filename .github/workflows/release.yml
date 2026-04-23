@@ -1,0 +1,67 @@
+name: Build and attach release asset
+
+# Runs when a release is published on GitHub (draft → published or created as published).
+# Creates a zip of the repo with release.json pre-injected and attaches it to the release.
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build-release-zip:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # needed to upload release assets
+
+    steps:
+      - name: Checkout repository at the release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+
+      - name: Inject release.json
+        run: |
+          python3 - <<'EOF'
+          import json, os
+          from datetime import datetime, timezone
+          data = {
+              "version": os.environ["GITHUB_REF_NAME"],
+              "installed_at": datetime.now(timezone.utc).isoformat(),
+          }
+          with open("release.json", "w") as f:
+              json.dump(data, f, indent=2)
+          print(f"Written release.json: {data}")
+          EOF
+
+      - name: Build release zip
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          ZIP_NAME="housebot-${TAG}.zip"
+
+          # Zip everything except files/dirs that must not be distributed
+          zip -r "${ZIP_NAME}" . \
+            --exclude ".git/*" \
+            --exclude ".github/*" \
+            --exclude "*.pyc" \
+            --exclude "*/__pycache__/*" \
+            --exclude ".venv/*" \
+            --exclude "node_modules/*" \
+            --exclude "ui/node_modules/*" \
+            --exclude "ui/build/*" \
+            --exclude "logs/*" \
+            --exclude "creds/*" \
+            --exclude "bridge/baileys_auth/*" \
+            --exclude "bot/services/db/*.db" \
+            --exclude ".env" \
+            --exclude "*.code-workspace"
+
+          echo "ZIP_NAME=${ZIP_NAME}" >> "$GITHUB_ENV"
+          echo "Built ${ZIP_NAME} ($(du -sh "${ZIP_NAME}" | cut -f1))"
+
+      - name: Upload zip as release asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.ref_name }}" "${ZIP_NAME}" \
+            --clobber

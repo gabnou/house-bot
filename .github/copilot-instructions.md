@@ -168,8 +168,8 @@ All endpoints are under `/admin/api/` and registered on the FastAPI app in `bot/
 - `GET  /admin/api/ollama/models` — list locally available Ollama models
 - `GET  /admin/api/ollama/active` — currently loaded model (in-memory)
 - `POST /admin/api/ollama/switch` — switch active model; optional `persist: bool` (default `true`) — when `false`, updates only the in-memory `intent_parser.MODEL` without writing `.env` (used for test loads)
-- `POST /admin/api/ollama/tested` — mark a model as tested/compatible; saved to `bot/tested_models.json`; also removes from incompatible store
-- `POST /admin/api/ollama/incompatible` — mark a model as incompatible; saved to `bot/incompatible_models.json`
+- `POST /admin/api/ollama/tested` — mark a model as tested/compatible; saved to `bot/ollama_models.json`; also removes from incompatible store
+- `POST /admin/api/ollama/incompatible` — mark a model as incompatible; saved to `bot/ollama_models.json`
 - `POST /admin/api/services/{service}/restart|stop|start` — control fastapi/bridge/scheduler
 - `POST /admin/api/services/restart-all` / `stop-all` — bulk service control
 - `GET  /admin/api/prompts/{skill}` — get prompt text (override file or built-in)
@@ -271,7 +271,7 @@ All config is in `.env` (see `.env.example`). Key variables:
 - Skeleton UI CSS must be imported with relative `../node_modules/...` paths in `app.css`
 - No external cloud services except: Open-Meteo (free), Google Calendar API, WhatsApp (Meta)
 - **StaticFiles mount order is critical**: `app.mount("/", StaticFiles(...))` must be the very last line in `bot/main.py`. Starlette resolves routes in registration order — mounting at `/` before route decorators causes `StaticFiles` to intercept all requests (POST included) and return 405.
-- **Model compatibility tracking**: `bot/tested_models.json` and `bot/incompatible_models.json` store user-confirmed verdicts. The Config page "Load and Test" section calls `POST /message` with `sender: '__admin_test__'` so the full pipeline is exercised. The user then explicitly marks the model as tested (persists to `.env`, sets active) or incompatible (records it, restores previous model in-memory). Marking as tested also removes from the incompatible store.
+- **Model compatibility tracking**: `bot/ollama_models.json` stores user-confirmed verdicts (`{"tested": [...], "incompatible": [...]}`). The Config page "Load and Test" section calls `POST /message` with `sender: '__admin_test__'` so the full pipeline is exercised. The user then explicitly marks the model as tested (persists to `.env`, sets active) or incompatible (records it, restores previous model in-memory). Marking as tested also removes from the incompatible store.
 - **`ollama/switch` with `persist: false`**: loads the model and updates `intent_parser.MODEL` in-memory without writing `.env`. Safe for test loads — the configured model is not silently changed until the user confirms.
 - **Google OAuth local callback**: the flow runs a `wsgiref.simple_server` on port 8787 in a daemon thread. `OAUTHLIB_INSECURE_TRANSPORT=1` must be set because the redirect URI is `http://` (localhost only — safe). Token is saved to `creds/token.json`. The status endpoint auto-refreshes an expired token if a `refresh_token` is present, matching `calendar_handler.get_service()` behaviour.
 

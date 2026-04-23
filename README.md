@@ -4,7 +4,7 @@
 
 Domestic WhatsApp bot for shared management of a shopping list between multiple partners, weather, and a shared Google Calendar. It also supports speech-to-text capabilities, automatically transcribing voice messages using a local model. Runs entirely locally on your own computer — no data is sent to external clouds except for explicitly configured third-party APIs.
 
-**Tested on macOS (MacBook).** Local setup steps and requirements may differ on Windows or Linux systems, especially regarding Python, Node.js, and hardware compatibility. Adjustments may be needed for your specific architecture.
+**macOS only.** HouseBot's installer relies on [Homebrew](https://brew.sh) and is designed and tested exclusively on macOS. It will not run on Windows or Linux as-is.
 
 **Memory requirements depend on the LLM model you choose:** LLM models are very memory intensive. For example:
 
@@ -31,6 +31,55 @@ Domestic WhatsApp bot for shared management of a shopping list between multiple 
 - **Multi-language support** — the bot is English by default to keep it international, but if a message in a different language is not understood, the bot automatically detects the language, translates the message to English, re-runs the command pipeline, and replies in the detected language
 - **Morning briefing** — automatic message at 07:30 (local time) with weather, today's events and a motivational quote. The schedule and language are configured in the Installation Wizard (Step 5). You can also set `BRIEFING_TIME` and `BRIEFING_LANGUAGE` directly in `.env`
 - **Free conversation** — LLM-generated replies for messages not recognized as commands
+
+---
+
+## Prerequisites
+
+- A Mac running macOS (Homebrew, Python, Node.js and Ollama are installed automatically)
+- A dedicated WhatsApp number (separate SIM, or your own number for single-user)
+- A Google account
+
+---
+
+## Installation
+
+### 1 — Download and extract the latest release
+
+Go to the [Releases page](https://github.com/gabnou/house-bot/releases/latest) and download the **`housebot-<version>.zip`** asset (not "Source code"). Then extract it and enter the folder:
+
+```bash
+unzip housebot-*.zip
+cd housebot-*
+```
+
+### 2 — Run the installer
+
+```bash
+chmod 755 install.sh
+./install.sh
+```
+
+The installer handles everything automatically (macOS only):
+- Installs Homebrew, Python 3.11+, Node.js, and Ollama if missing
+- Creates the Python virtual environment and installs all dependencies
+- Installs bridge Node.js dependencies and builds the Control Panel UI
+- Creates a default `.env` from `.env.example`
+- Starts Ollama and all HouseBot services
+
+### 3 — Complete setup in the Installation Wizard
+
+When the installer finishes, open **[http://localhost:8000/install](http://localhost:8000/install)** and follow the step-by-step wizard. There is no need to edit `.env` manually — the wizard covers everything:
+
+| Step | What it does |
+|---|---|
+| **1. Ollama — AI Models** | Choose and pull a local LLM model; set the keep-alive timeout; test the model through the real HouseBot pipeline and mark it as tested (sets it active) or incompatible |
+| **2. Google OAuth** | Authorize Google Calendar access and store the OAuth token (requires `creds/client_google_api_calendar.json` from Google Cloud Console) |
+| **3. WhatsApp Pairing** | Scan the QR code to link the dedicated WhatsApp number; set the linked-device display name (`WHATSAPP_APPNAME`) |
+| **4. Sender Restrictions** | Send a message from each partner's phone, scan for it here, and authorize the JID — saved automatically to `.env` |
+| **5. Location & Briefing** | Search for your city on a map to auto-fill coordinates and timezone; pick the morning briefing language |
+
+All settings are saved directly to `.env` and take effect immediately (a bridge restart is prompted when needed).
 
 ---
 
@@ -141,54 +190,6 @@ house-bot/
 
 ---
 
-## Prerequisites
-
-- [Homebrew](https://brew.sh)
-- Python 3.11+
-- Node.js 18+
-- Ollama
-- A dedicated WhatsApp number (separate SIM, or your own number for single-user)
-- A Google account
-
----
-
-## Installation
-
-### 1 — Clone the repository
-
-```bash
-git clone <repo-url> house-bot
-cd house-bot
-```
-
-### 2 — Run the installer
-
-```bash
-chmod 755 install.sh
-./install.sh
-```
-
-The installer handles everything automatically (macOS only):
-- Installs Homebrew, Python 3.11+, Node.js, and Ollama if missing
-- Creates the Python virtual environment and installs all dependencies
-- Installs bridge Node.js dependencies and builds the Control Panel UI
-- Creates a default `.env` from `.env.example`
-- Starts Ollama and all HouseBot services
-
-### 3 — Complete setup in the Installation Wizard
-
-When the installer finishes, open **[http://localhost:8000/install](http://localhost:8000/install)** and follow the step-by-step wizard. There is no need to edit `.env` manually — the wizard covers everything:
-
-| Step | What it does |
-|---|---|
-| **1. Ollama — AI Models** | Choose and pull a local LLM model; set the keep-alive timeout; test the model through the real HouseBot pipeline and mark it as tested (sets it active) or incompatible |
-| **2. Google OAuth** | Authorize Google Calendar access and store the OAuth token (requires `creds/client_google_api_calendar.json` from Google Cloud Console) |
-| **3. WhatsApp Pairing** | Scan the QR code to link the dedicated WhatsApp number; set the linked-device display name (`WHATSAPP_APPNAME`) |
-| **4. Sender Restrictions** | Send a message from each partner's phone, scan for it here, and authorize the JID — saved automatically to `.env` |
-| **5. Location & Briefing** | Search for your city on a map to auto-fill coordinates and timezone; pick the morning briefing language |
-
-All settings are saved directly to `.env` and take effect immediately (a bridge restart is prompted when needed).
-
 ---
 
 ## Usage
@@ -246,32 +247,22 @@ open http://localhost:8000
 
 ---
 
-### Pulling updates
+### Updating HouseBot
 
-After pulling new code from git, apply changes depending on what was updated:
+The easiest way to update is through the **Control Panel** at **http://localhost:8000** → Admin → HouseBot Software Update. The page automatically checks for a newer release on GitHub. When one is available, click **Update Now** — the update runs in the background and shows live progress. It:
 
-**Python / bot logic changed** (files under `bot/`, `bridge/`, `.env.example`, `requirements.txt`):
+1. Downloads the release zip from GitHub
+2. Applies updated files (your `.env`, credentials, logs, database and WhatsApp session are never overwritten)
+3. Installs any new Python dependencies
+4. Rebuilds the UI bundle
+5. Restarts all services automatically
+
+**Manual update via CLI** — if the bot is not running, download the `housebot-<version>.zip` asset from the [Releases page](https://github.com/gabnou/house-bot/releases/latest) (not "Source code"), extract it over the existing folder (preserve your `.env` and `creds/`), then:
 
 ```bash
-git pull
+./housebot.sh ui-build   # only needed if ui/src/ changed
 ./housebot.sh restart
 ```
-
-**UI source changed** (files under `ui/src/`):
-
-```bash
-git pull
-./housebot.sh ui-build   # recompile ui/src/ → ui/build/
-./housebot.sh restart    # restart FastAPI to serve the new bundle
-```
-
-Or in one step:
-
-```bash
-git pull && ./housebot.sh ui-build && ./housebot.sh restart
-```
-
-> `./housebot.sh restart` alone does **not** rebuild the UI — `ui/build/` is only updated by an explicit `ui-build`. This keeps restarts fast for bot-only changes.
 
 ---
 
