@@ -574,6 +574,47 @@
 	let googleLoading = $state(false);
 	let googleMsg = $state<{ ok: boolean; text: string } | null>(null);
 
+	// Credentials paste-and-upload state
+	let googleClientId = $state('');
+	let googleClientSecret = $state('');
+	let googleCredsSubmitting = $state(false);
+	let googleCredsMsg = $state<{ ok: boolean; text: string } | null>(null);
+
+	async function saveGoogleCredentials() {
+		googleCredsMsg = null;
+		googleCredsSubmitting = true;
+		try {
+			const json = JSON.stringify({
+				installed: {
+					client_id: googleClientId.trim(),
+					client_secret: googleClientSecret.trim(),
+					auth_uri: 'https://accounts.google.com/o/oauth2/auth',
+					token_uri: 'https://oauth2.googleapis.com/token',
+					auth_provider_x509_cert_url: 'https://www.googleapis.com/oauth2/v1/certs',
+					redirect_uris: ['http://localhost'],
+				},
+			});
+			const res = await fetch('/admin/api/install/google-auth/credentials', {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ content: json }),
+			});
+			const data = await res.json();
+			if (res.ok && data.ok) {
+				googleCredsMsg = { ok: true, text: 'Credentials saved — you can now authorize your Google account.' };
+				googleClientId = '';
+				googleClientSecret = '';
+				await loadGoogleStatus();
+			} else {
+				googleCredsMsg = { ok: false, text: data.detail ?? 'Failed to save credentials.' };
+			}
+		} catch (e) {
+			googleCredsMsg = { ok: false, text: e instanceof Error ? e.message : 'Request failed' };
+		} finally {
+			googleCredsSubmitting = false;
+		}
+	}
+
 	const step2Done = $derived(googleStatus === 'valid');
 
 	// Calendar picker state
@@ -924,6 +965,31 @@
 	let scanDone         = $state(false);
 	let authorizingJid   = $state<string | null>(null);
 	let authorizeError   = $state<string | null>(null);
+	let removingJid      = $state<string | null>(null);
+	let removeError      = $state<string | null>(null);
+
+	async function removeSender(jid: string) {
+		removingJid = jid;
+		removeError = null;
+		try {
+			const res = await fetch('/admin/api/install/sender-restrictions', {
+				method: 'DELETE',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ jid }),
+			});
+			if (res.ok) {
+				const data = await res.json();
+				authorizedPartners = data.partners ?? [];
+			} else {
+				const err = await res.json().catch(() => ({}));
+				removeError = err.detail ?? `HTTP ${res.status}`;
+			}
+		} catch (e) {
+			removeError = e instanceof Error ? e.message : 'Request failed';
+		} finally {
+			removingJid = null;
+		}
+	}
 
 	const step4Done = $derived(authorizedPartners.length > 0);
 
@@ -1741,16 +1807,76 @@
 			{#if step2Open}
 				<div class="border-t border-surface-200-800 p-4 space-y-4">
 
-					<!-- No credentials file warning -->
+					<!-- No credentials file warning + paste form -->
 					{#if !googleCredsExist}
-						<div class="flex items-start gap-3 px-4 py-3 rounded-xl border border-error-500/40 bg-error-500/10">
-							<span class="text-xl mt-0.5">⚠️</span>
-							<div>
-								<p class="font-semibold text-xs text-error-400">Credentials file missing</p>
-								<p class="text-xs text-surface-400-600 mt-1">
-									Place your Google OAuth credentials at <span class="font-mono">creds/client_google_api_calendar.json</span>.
-									Download it from the <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer" class="text-primary-400 hover:underline">Google Cloud Console</a>.
-								</p>
+						<div class="space-y-3">
+							<!-- Warning banner -->
+							<div class="flex items-start gap-3 px-4 py-3 rounded-xl border border-error-500/40 bg-error-500/10">
+								<span class="text-xl mt-0.5">⚠️</span>
+								<div class="flex-1 min-w-0">
+									<p class="font-semibold text-xs text-error-400">Google OAuth credentials file missing</p>
+									<p class="text-xs text-surface-400-600 mt-1">
+										HouseBot needs a Google Cloud project with the Calendar API enabled to access your calendar.
+										The project name is what Google shows on the consent screen when you authorize the app.
+									</p>
+									<p class="text-xs font-medium text-surface-400-600 mt-2">If you don't have a Google Cloud project yet:</p>
+									<ol class="text-xs text-surface-400-600 mt-1 list-decimal list-inside space-y-0.5">
+										<li>Go to <a href="https://console.cloud.google.com/projectcreate" target="_blank" rel="noopener noreferrer" class="text-primary-400 hover:underline">Create a new project ↗</a> — give it a meaningful name (e.g. <em>HouseBot</em>)</li>
+										<li>Enable the <a href="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com" target="_blank" rel="noopener noreferrer" class="text-primary-400 hover:underline">Google Calendar API ↗</a> on that project</li>
+										<li>Configure the <a href="https://console.cloud.google.com/apis/credentials/consent" target="_blank" rel="noopener noreferrer" class="text-primary-400 hover:underline">OAuth consent screen ↗</a> (External, add your Google account as a test user)</li>
+									</ol>
+									<p class="text-xs font-medium text-surface-400-600 mt-2">Then create the OAuth credentials:</p>
+									<ol class="text-xs text-surface-400-600 mt-1 list-decimal list-inside space-y-0.5">
+										<li>Open <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer" class="text-primary-400 hover:underline">APIs &amp; Services → Credentials ↗</a></li>
+										<li>Click <strong>+ CREATE CREDENTIALS</strong> → <strong>OAuth client ID</strong></li>
+										<li>Choose application type <strong>Desktop app</strong>, click <strong>Create</strong></li>
+										<li>Copy the <strong>Client ID</strong> and <strong>Client Secret</strong> from the confirmation dialog and enter them below</li>
+									</ol>
+								</div>
+							</div>
+
+							<!-- Credentials form -->
+							<div class="space-y-3">
+								<div class="space-y-1">
+									<p class="text-xs font-medium text-surface-400-600">Client ID</p>
+									<input
+										bind:value={googleClientId}
+										type="text"
+										spellcheck="false"
+										placeholder="1234567890-abc….apps.googleusercontent.com"
+										class="w-full font-mono text-xs rounded-lg border border-surface-300-700
+										bg-surface-100-900 text-surface-900-50 placeholder:text-surface-400-600
+										focus:outline-none focus:border-primary-500/60 px-3 py-2 transition-colors"
+									/>
+								</div>
+								<div class="space-y-1">
+									<p class="text-xs font-medium text-surface-400-600">Client Secret</p>
+									<input
+										bind:value={googleClientSecret}
+										type="password"
+										spellcheck="false"
+										placeholder="GOCSPX-…"
+										class="w-full font-mono text-xs rounded-lg border border-surface-300-700
+										bg-surface-100-900 text-surface-900-50 placeholder:text-surface-400-600
+										focus:outline-none focus:border-primary-500/60 px-3 py-2 transition-colors"
+									/>
+								</div>
+								<div class="flex items-center gap-3">
+									<button
+										onclick={saveGoogleCredentials}
+										disabled={googleCredsSubmitting || !googleClientId.trim() || !googleClientSecret.trim()}
+										class="px-4 py-2 rounded-lg text-xs font-semibold bg-primary-500/20 text-primary-400
+										hover:bg-primary-500/30 border border-primary-500/40 transition-colors
+										disabled:opacity-40 disabled:cursor-not-allowed"
+									>
+										{googleCredsSubmitting ? '…' : '💾 Save Credentials'}
+									</button>
+									{#if googleCredsMsg}
+										<span class="text-xs {googleCredsMsg.ok ? 'text-success-500' : 'text-error-400'}">
+											{googleCredsMsg.text}
+										</span>
+									{/if}
+								</div>
 							</div>
 						</div>
 					{/if}
@@ -2065,9 +2191,19 @@
 									<p class="text-xs font-semibold">{partner.name || '—'}</p>
 									<p class="text-[10px] text-surface-400-600 font-mono">{partner.jid}</p>
 								</div>
-								<span class="px-2 py-0.5 rounded-full text-xs font-medium bg-success-500/15 text-success-400 shrink-0">authorized</span>
+								<button
+									onclick={() => removeSender(partner.jid)}
+									disabled={removingJid === partner.jid}
+									title="Remove sender"
+									class="shrink-0 px-2 py-1 rounded text-xs font-medium text-error-400/70
+									hover:text-error-400 hover:bg-error-500/10 transition-colors
+									disabled:opacity-40 disabled:cursor-not-allowed"
+								>{removingJid === partner.jid ? '…' : '✕'}</button>
 							</div>
 						{/each}
+						{#if removeError}
+							<p class="text-xs text-error-400">❌ {removeError}</p>
+						{/if}
 					</div>
 				{/if}
 

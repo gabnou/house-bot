@@ -2,7 +2,8 @@
 **/.DS_Store
 .vscode/
 .env
-creds/
+creds/*
+!creds/.gitkeep
 bridge/baileys_auth/
 bot/services/db/shoppinglist.db
 logs/

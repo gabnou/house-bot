@@ -12,10 +12,20 @@ require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
 const FASTAPI_URL = 'http://localhost:8000';
 
-const PARTNER = (process.env.PARTNER_LID || '')
+let PARTNER = (process.env.PARTNER_LID || '')
     .split(',')
     .map(s => s.split(':')[0].trim())
     .filter(Boolean);
+
+function reloadPartners() {
+    // Re-read .env so PARTNER_LID changes take effect without a bridge restart
+    require('dotenv').config({ path: path.join(__dirname, '..', '.env'), override: true });
+    PARTNER = (process.env.PARTNER_LID || '')
+        .split(',')
+        .map(s => s.split(':')[0].trim())
+        .filter(Boolean);
+    console.log(`🔄 PARTNER list reloaded: ${PARTNER.join(', ') || '(empty)'}`);
+}
 
 let sock = null;
 let isConnected = false;
@@ -178,6 +188,11 @@ app.post('/send', async (req, res) => {
     }
 });
 
+app.post('/reload-partners', (req, res) => {
+    reloadPartners();
+    res.json({ ok: true, partners: PARTNER });
+});
+
 app.listen(3001, () => {
     console.log('🌐 Bridge HTTP listening on port 3001');
 });
@@ -273,10 +288,22 @@ async function startBot() {
         if (type !== 'notify') return;
 
         for (const msg of messages) {
-            if (msg.key.remoteJid?.endsWith('@g.us')) continue;
-            if (msg.key.fromMe) continue;
+            const remoteJid = msg.key.remoteJid;
+            const fromMe    = msg.key.fromMe;
+            console.log(`🔍 Message — remoteJid: ${remoteJid} | fromMe: ${fromMe} | pushName: ${msg.pushName || 'unknown'}`);
 
-            const sender = msg.key.remoteJid;
+            if (remoteJid?.endsWith('@g.us')) {
+                console.log(`⏭️  Skipped — group message`);
+                continue;
+            }
+            // Allow fromMe messages only when the remoteJid is a configured partner
+            // (personal-number mode: user sends to themselves / Saved Messages)
+            if (fromMe && !PARTNER.includes(remoteJid)) {
+                console.log(`⏭️  Skipped — fromMe and ${remoteJid} is not a configured partner`);
+                continue;
+            }
+
+            const sender = remoteJid;
             if (!PARTNER.includes(sender)) {
                 console.log(`🚫 Message ignored from: ${sender} (name: ${msg.pushName || 'unknown'})`);
                 continue;
