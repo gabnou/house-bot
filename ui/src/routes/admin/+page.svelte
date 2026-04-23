@@ -1,38 +1,55 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
 
-	// ── Service Control state ──────────────────────────────────────────────
-	type SvcKey = 'fastapi' | 'bridge' | 'scheduler';
-	let svcBusy = $state<Record<SvcKey, boolean>>({ fastapi: false, bridge: false, scheduler: false });
+	// ── HouseBot Management state ──────────────────────────────────────────────
+	type HousebotAction = 'stop' | 'restart';
+	let svcPending = $state<HousebotAction | null>(null);
+	let svcBusy = $state(false);
 	let svcMsg = $state<{ ok: boolean; text: string } | null>(null);
+	let svcLog = $state<string[]>([]);
+	let svcLogOpen = $state(false);
 
-	async function serviceAction(
-		service: SvcKey | 'all',
-		action: 'restart' | 'stop' | 'start' | 'restart-all' | 'stop-all'
-	) {
+	async function fetchSvcLogs(): Promise<string[]> {
+		const svcs = ['fastapi', 'bridge', 'scheduler'];
+		const results = await Promise.all(
+			svcs.map(s =>
+				fetch(`/admin/api/logs?service=${s}&lines=20`)
+					.then(r => r.json())
+					.then((d: { lines: string[] }) => d.lines.map(l => `[${s}] ${l}`))
+					.catch(() => [] as string[])
+			)
+		);
+		return results.flat();
+	}
+
+	async function executeAction(action: HousebotAction) {
+		svcPending = null;
+		svcBusy = true;
 		svcMsg = null;
-		if (service !== 'all') {
-			svcBusy[service] = true;
-		} else {
-			svcBusy.fastapi = true; svcBusy.bridge = true; svcBusy.scheduler = true;
-		}
+		svcLog = [];
+		svcLogOpen = false;
 		try {
-			const url = service === 'all'
-				? `/admin/api/services/${action}`
-				: `/admin/api/services/${service}/${action}`;
+			const url = action === 'restart'
+				? '/admin/api/services/restart-all'
+				: '/admin/api/services/stop-all';
 			const res = await fetch(url, { method: 'POST' });
 			const data = await res.json();
-			svcMsg = data.ok
-				? { ok: true,  text: `${action} → ${service}: done` }
-				: { ok: false, text: data.detail ?? 'Action failed' };
+			if (data.ok) {
+				const waitMsg = action === 'restart'
+					? 'HouseBot restart initiated. Waiting for services…'
+					: 'HouseBot stopped. To start again, run: bash housebot.sh start';
+				svcMsg = { ok: true, text: waitMsg };
+				// For restart, wait for housebot.sh to complete (≈10s) before fetching logs
+				if (action === 'restart') await new Promise(r => setTimeout(r, 10000));
+			} else {
+				svcMsg = { ok: false, text: data.detail ?? 'Action failed' };
+			}
+			svcLog = await fetchSvcLogs();
 		} catch (e: unknown) {
 			svcMsg = { ok: false, text: e instanceof Error ? e.message : 'Request failed' };
 		} finally {
-			if (service !== 'all') {
-				svcBusy[service] = false;
-			} else {
-				svcBusy.fastapi = false; svcBusy.bridge = false; svcBusy.scheduler = false;
-			}
+			svcBusy = false;
 		}
 	}
 
@@ -162,7 +179,79 @@
 		}
 	}
 
-	onMount(() => { loadGoogleStatus(); loadOllamaStatus(); });
+	// ── HouseBot Software Update state ─────────────────────────────────────
+	let hbInstalledTag = $state<string | null>(null);
+	let hbLatestTag = $state<string | null>(null);
+	let hbUpdateAvailable = $state<boolean | null>(null);
+	let hbVersionBusy = $state(false);
+	let hbRepoUrl = $state('https://github.com/gabnou/house-bot');
+
+	type HbUpgradeStatus = 'idle' | 'running' | 'done' | 'failed';
+	let hbUpgradeStatus = $state<HbUpgradeStatus>('idle');
+	let hbUpgradeLog = $state<string[]>([]);
+	let hbUpgradeExitCode = $state<number | null>(null);
+	let hbPollTimer = $state<ReturnType<typeof setInterval> | null>(null);
+
+	function stopHbPoll() {
+		if (hbPollTimer !== null) { clearInterval(hbPollTimer); hbPollTimer = null; }
+	}
+
+	async function pollHbUpgradeStatus() {
+		try {
+			const res = await fetch('/admin/api/housebot/upgrade/status');
+			if (!res.ok) return;
+			const data = await res.json();
+			hbUpgradeStatus = data.status ?? 'idle';
+			hbUpgradeLog = data.log ?? [];
+			hbUpgradeExitCode = data.exit_code ?? null;
+			if (hbUpgradeStatus === 'done' || hbUpgradeStatus === 'failed') {
+				stopHbPoll();
+				if (hbUpgradeStatus === 'done') {
+					hbUpdateAvailable = null;
+					hbInstalledTag = null;
+					hbLatestTag = null;
+				}
+			}
+		} catch { /* non-fatal */ }
+	}
+
+	async function checkHousebotUpdate() {
+		hbVersionBusy = true;
+		try {
+			const res = await fetch('/admin/api/housebot/version');
+			if (res.ok) {
+				const data = await res.json();
+				hbInstalledTag = data.installed ?? null;
+				hbLatestTag = data.latest ?? null;
+				hbUpdateAvailable = data.update_available ?? false;
+				hbRepoUrl = data.repo_url ?? hbRepoUrl;
+			}
+		} catch { /* non-fatal */ } finally {
+			hbVersionBusy = false;
+		}
+	}
+
+	async function upgradeHousebot() {
+		hbUpgradeLog = [];
+		hbUpgradeStatus = 'running';
+		hbUpgradeExitCode = null;
+		try {
+			const res = await fetch('/admin/api/housebot/upgrade', { method: 'POST' });
+			const data = await res.json();
+			if (!data.ok) {
+				hbUpgradeStatus = 'failed';
+				hbUpgradeLog = [data.message ?? 'Upgrade failed.'];
+				return;
+			}
+			stopHbPoll();
+			hbPollTimer = setInterval(pollHbUpgradeStatus, 2000);
+		} catch (e: unknown) {
+			hbUpgradeStatus = 'failed';
+			hbUpgradeLog = [e instanceof Error ? e.message : 'Request failed'];
+		}
+	}
+
+	onMount(() => { loadGoogleStatus(); loadOllamaStatus(); checkOllamaUpdate(); checkHousebotUpdate(); });
 </script>
 
 <div class="space-y-6">
@@ -170,68 +259,97 @@
 	<!-- Header -->
 	<div class="card bg-surface-50-950 border border-surface-200-800 rounded-xl p-5 flex items-center gap-4">
 		<span class="text-3xl">🔧</span>
-		<div>
+		<div class="flex-1">
 			<h2 class="text-lg font-bold">Admin</h2>
 			<p class="text-xs text-surface-400-600 mt-0.5">Service control, account maintenance, and software updates.</p>
 		</div>
+		<button
+			onclick={() => goto('/')}
+			class="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium border border-surface-300-700
+			text-surface-500-500 hover:bg-surface-100-900 transition-colors"
+		>
+			← Back
+		</button>
 	</div>
 
-	<!-- ── Service Control ─────────────────────────────────────────────── -->
+	<!-- ── HouseBot Management ────────────────────────────────────────────── -->
 	<div class="card bg-surface-50-950 border border-surface-200-800 rounded-xl overflow-hidden">
 		<div class="px-5 py-3.5 border-b border-surface-200-800 flex items-center gap-2">
 			<span>⚡</span>
-			<h3 class="font-semibold text-sm">Service Control</h3>
+			<h3 class="font-semibold text-sm">HouseBot Management</h3>
 		</div>
 		<div class="p-5 space-y-4">
-			{#each ([
-				{ key: 'fastapi'   as SvcKey, label: 'FastAPI Bot',     icon: '🐍' },
-				{ key: 'bridge'    as SvcKey, label: 'WhatsApp Bridge', icon: '📱' },
-				{ key: 'scheduler' as SvcKey, label: 'Scheduler',       icon: '⏰' },
-			]) as svc}
-				<div class="flex items-center gap-3">
-					<span class="text-lg w-6 text-center">{svc.icon}</span>
-					<span class="text-sm font-medium flex-1">{svc.label}</span>
-					{#each (['restart', 'stop', 'start'] as const) as action}
-						<button
-							onclick={() => serviceAction(svc.key, action)}
-							disabled={svcBusy[svc.key]}
-							class="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors
-							{action === 'restart' ? 'bg-primary-500/15 text-primary-400 hover:bg-primary-500/30' :
-							 action === 'stop'    ? 'bg-error-500/15 text-error-400 hover:bg-error-500/25' :
-							                       'bg-success-500/15 text-success-500 hover:bg-success-500/25'}
-							disabled:opacity-40 disabled:cursor-not-allowed"
-						>
-							{svcBusy[svc.key] ? '…' :
-							 action === 'restart' ? '🔄 Restart' :
-							 action === 'stop'    ? '⏹ Stop' : '▶ Start'}
-						</button>
-					{/each}
-				</div>
-			{/each}
-
-			<!-- Bulk actions -->
-			<div class="pt-3 border-t border-surface-100-900 flex gap-3">
+			<!-- Action buttons -->
+			<div class="flex gap-3">
 				<button
-					onclick={() => serviceAction('all', 'restart-all')}
-					disabled={svcBusy.fastapi}
-					class="flex-1 py-2 rounded-lg text-xs font-medium bg-primary-500/15 text-primary-400
-					hover:bg-primary-500/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+					onclick={() => { svcPending = 'stop'; svcMsg = null; }}
+					disabled={svcBusy}
+					class="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold
+					border border-error-500/40 text-error-400 hover:bg-error-500/10
+					transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
 				>
-					🔄 Restart All
+					<span class="text-[10px]">⏹</span> {svcBusy ? 'Working…' : 'Stop'}
 				</button>
 				<button
-					onclick={() => serviceAction('all', 'stop-all')}
-					disabled={svcBusy.fastapi}
-					class="flex-1 py-2 rounded-lg text-xs font-medium bg-error-500/15 text-error-400
-					hover:bg-error-500/25 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+					onclick={() => { svcPending = 'restart'; svcMsg = null; }}
+					disabled={svcBusy}
+					class="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold
+					border border-primary-500/40 text-primary-400 hover:bg-primary-500/10
+					transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
 				>
-					⏹ Stop Bridge + Scheduler
+					<span class="text-[10px]">🔄</span> {svcBusy ? 'Working…' : 'Restart'}
 				</button>
 			</div>
 
+			<!-- Inline confirmation -->
+			{#if svcPending}
+				<div class="rounded-lg border border-warning-500/40 bg-warning-500/10 px-4 py-3 flex items-center gap-3">
+					<span class="text-sm flex-1">
+						{#if svcPending === 'stop'}
+							This will <strong>stop all HouseBot services</strong>. To start again you will need to run <code class="font-mono text-xs bg-black/20 px-1 rounded">bash housebot.sh start</code> in the bot folder. Proceed?
+						{:else}
+							Are you sure you want to <strong>restart</strong> HouseBot?
+						{/if}
+					</span>
+					<button
+						onclick={() => executeAction(svcPending!)}
+						class="px-3 py-1.5 rounded-lg text-xs font-medium bg-warning-500/20 text-warning-400
+						hover:bg-warning-500/35 transition-colors"
+					>Confirm</button>
+					<button
+						onclick={() => svcPending = null}
+						class="px-3 py-1.5 rounded-lg text-xs font-medium bg-surface-100-900 text-surface-500-500
+						hover:bg-surface-200-800 transition-colors"
+					>Cancel</button>
+				</div>
+			{/if}
+
+			<!-- Result message -->
 			{#if svcMsg}
 				<div class="text-xs px-3 py-2 rounded-lg {svcMsg.ok ? 'bg-success-500/10 text-success-500' : 'bg-error-500/10 text-error-400'}">
 					{svcMsg.text}
+				</div>
+			{/if}
+
+			<!-- Log viewer (appears after action, collapsed by default) -->
+			{#if svcLog.length > 0}
+				<div class="rounded-lg border border-surface-200-800 overflow-hidden">
+					<button
+						onclick={() => svcLogOpen = !svcLogOpen}
+						class="w-full flex items-center gap-2 px-4 py-2.5 bg-surface-100-900 hover:bg-surface-200-800
+						transition-colors text-xs font-medium text-surface-500-500 text-left"
+					>
+						<span class="transition-transform {svcLogOpen ? 'rotate-90' : ''} inline-block">▶</span>
+						<span>Service Logs</span>
+						<span class="ml-auto opacity-60">{svcLog.length} lines</span>
+					</button>
+					{#if svcLogOpen}
+						<div class="bg-black p-3 max-h-60 overflow-y-auto font-mono text-[11px] leading-relaxed text-white space-y-0.5">
+							{#each svcLog as line}
+								<div class="whitespace-pre-wrap break-all">{line}</div>
+							{/each}
+						</div>
+					{/if}
 				</div>
 			{/if}
 		</div>
@@ -242,6 +360,9 @@
 		<div class="px-5 py-3.5 border-b border-surface-200-800 flex items-center gap-2">
 			<span>🧠</span>
 			<h3 class="font-semibold text-sm">Ollama AI Engine</h3>
+			{#if ollamaInstalledVer}
+				<span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-100-900 text-surface-400-600">v{ollamaInstalledVer}</span>
+			{/if}
 			<button
 				onclick={loadOllamaStatus}
 				class="ml-auto text-xs px-2 py-1 rounded bg-surface-100-900 hover:bg-surface-200-800
@@ -305,15 +426,20 @@
 							: ollamaUpdateAvailable ? 'bg-warning-400' : 'bg-success-500'}"></div>
 					<div class="flex-1">
 						<p class="text-xs font-semibold">
-							{ollamaInstalledVer === null
-								? 'Ollama version'
-								: ollamaUpdateAvailable ? '⚠️ Update available' : '✅ Up to date'}
+							{#if ollamaInstalledVer === null}
+								{ollamaVersionBusy ? 'Checking version…' : 'Ollama version'}
+							{:else if ollamaUpdateAvailable}
+								⚠️ Update available
+							{:else}
+								✅ Up to date
+							{/if}
 						</p>
 						{#if ollamaInstalledVer}
-							<p class="text-[10px] text-surface-400-600 mt-0.5">Installed: {ollamaInstalledVer}</p>
-						{/if}
-						{#if ollamaLatestVer}
-							<p class="text-[10px] text-surface-400-600">Latest: {ollamaLatestVer}</p>
+							<p class="text-[10px] text-surface-400-600 mt-0.5">
+								{ollamaUpdateAvailable && ollamaLatestVer
+									? `v${ollamaInstalledVer} → v${ollamaLatestVer}`
+									: `v${ollamaInstalledVer}`}
+							</p>
 						{/if}
 					</div>
 					{#if ollamaUpdateAvailable}
@@ -327,15 +453,6 @@
 							{upgradeStatus === 'running' ? '…' : '⬆️ Upgrade'}
 						</button>
 					{/if}
-					<button
-						onclick={checkOllamaUpdate}
-						disabled={ollamaVersionBusy}
-						class="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium bg-surface-100-900
-						hover:bg-surface-200-800 text-surface-500-500 transition-colors
-						disabled:opacity-40 disabled:cursor-not-allowed"
-					>
-						{ollamaVersionBusy ? '…' : '🔍 Check'}
-					</button>
 				</div>
 				<!-- Upgrade progress panel -->
 				{#if upgradeStatus !== 'idle'}
@@ -415,20 +532,91 @@
 		</div>
 	</div>
 
-	<!-- ── Software Update (Phase 5) ────────────────────────────────────────── -->
+	<!-- ── HouseBot Software Update ─────────────────────────────────────── -->
 	<div class="card bg-surface-50-950 border border-surface-200-800 rounded-xl overflow-hidden">
 		<div class="px-5 py-3.5 border-b border-surface-200-800 flex items-center gap-2">
 			<span>🔄</span>
-			<h3 class="font-semibold text-sm">Software Update</h3>
+			<h3 class="font-semibold text-sm">HouseBot Software Update</h3>
+			{#if hbInstalledTag}
+				<span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-100-900 text-surface-400-600">{hbInstalledTag}</span>
+			{/if}
+			<a
+				href={hbRepoUrl}
+				target="_blank"
+				rel="noopener noreferrer"
+				class="ml-auto text-[10px] px-2 py-1 rounded bg-surface-100-900 hover:bg-surface-200-800
+				text-surface-500-500 transition-colors font-medium"
+			>GitHub ↗</a>
 		</div>
-		<div class="p-5 flex items-center gap-4">
-			<div class="flex-1">
-				<p class="text-sm text-surface-400-600">Pull the latest changes from git, rebuild the UI, restart services automatically.</p>
-				<p class="font-mono text-xs text-surface-500-500 mt-1">git pull → ui-build → restart</p>
+		<div class="p-5 space-y-3">
+			<!-- Version box -->
+			<div class="flex items-center gap-3 px-4 py-3 rounded-xl border
+				{hbInstalledTag === null
+					? 'border-surface-200-800 bg-surface-100-900/50'
+					: hbUpdateAvailable
+						? 'border-warning-500/40 bg-warning-500/5'
+						: 'border-success-500/40 bg-success-500/5'}">
+				<div class="w-2.5 h-2.5 rounded-full shrink-0
+					{hbInstalledTag === null
+						? 'bg-surface-400-600'
+						: hbUpdateAvailable ? 'bg-warning-400' : 'bg-success-500'}"></div>
+				<div class="flex-1">
+					<p class="text-xs font-semibold">
+						{#if hbInstalledTag === null}
+							{hbVersionBusy ? 'Checking version…' : 'Release version'}
+						{:else if hbUpdateAvailable}
+							⚠️ Update available
+						{:else}
+							✅ Up to date
+						{/if}
+					</p>
+					{#if hbInstalledTag}
+						<p class="text-[10px] text-surface-400-600 mt-0.5">
+							{hbUpdateAvailable && hbLatestTag
+								? `${hbInstalledTag} → ${hbLatestTag}`
+								: hbInstalledTag}
+						</p>
+					{/if}
+				</div>
+				{#if hbUpdateAvailable}
+					<button
+						onclick={upgradeHousebot}
+						disabled={hbUpgradeStatus === 'running'}
+						class="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium
+						bg-warning-500/20 text-warning-400 hover:bg-warning-500/30
+						transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+					>
+						{hbUpgradeStatus === 'running' ? '…' : '⬆️ Update Now'}
+					</button>
+				{/if}
 			</div>
-			<button class="px-4 py-2 rounded-lg text-sm font-medium bg-primary-500/20 text-primary-400 opacity-40 cursor-not-allowed" disabled>
-				Update Now
-			</button>
+
+			<!-- Upgrade progress panel -->
+			{#if hbUpgradeStatus !== 'idle'}
+				<div class="rounded-xl border overflow-hidden
+					{hbUpgradeStatus === 'running' ? 'border-primary-500/30 bg-primary-500/5' :
+					 hbUpgradeStatus === 'done'    ? 'border-success-500/40 bg-success-500/5' :
+					                               'border-error-500/40 bg-error-500/5'}">
+					<div class="flex items-center gap-2 px-4 py-2 border-b
+						{hbUpgradeStatus === 'running' ? 'border-primary-500/20' :
+						 hbUpgradeStatus === 'done'    ? 'border-success-500/20' :
+						                               'border-error-500/20'}">
+						{#if hbUpgradeStatus === 'running'}
+							<span class="inline-block w-2 h-2 rounded-full bg-primary-400 animate-pulse"></span>
+							<span class="text-xs font-semibold text-primary-400">Upgrading…</span>
+						{:else if hbUpgradeStatus === 'done'}
+							<span class="text-xs font-semibold text-success-500">✅ Upgrade complete — HouseBot is restarting</span>
+						{:else}
+							<span class="text-xs font-semibold text-error-400">❌ Upgrade failed{hbUpgradeExitCode !== null ? ` (exit ${hbUpgradeExitCode})` : ''}</span>
+						{/if}
+						<button
+							onclick={() => { hbUpgradeStatus = 'idle'; hbUpgradeLog = []; hbUpgradeExitCode = null; stopHbPoll(); }}
+							class="ml-auto text-[10px] text-surface-400-600 hover:text-surface-900-50 transition-colors"
+						>✕ dismiss</button>
+					</div>
+					<pre class="font-mono text-[10px] text-surface-400-600 px-4 py-3 max-h-48 overflow-y-auto whitespace-pre-wrap break-all leading-relaxed bg-black text-white">{hbUpgradeLog.length ? hbUpgradeLog.join('\n') : '(waiting for output…)'}</pre>
+				</div>
+			{/if}
 		</div>
 	</div>
 
