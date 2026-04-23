@@ -1,6 +1,7 @@
 <script lang="ts">
 	import '../app.css';
 	import { page } from '$app/stores';
+	import { onMount } from 'svelte';
 	import { Navigation } from '@skeletonlabs/skeleton-svelte';
 
 	let { children } = $props();
@@ -57,6 +58,19 @@
 	const gitDate       = __GIT_DATE__;
 	const gitBranch     = __GIT_BRANCH__;
 	const gitCommitUrl  = __GIT_COMMIT_URL__;
+
+	// Release version — fetched at runtime from release.json (only present for release installs)
+	let releaseVersion = $state<string | null>(null);
+
+	onMount(async () => {
+		try {
+			const res = await fetch('/admin/api/housebot/version');
+			if (res.ok) {
+				const data = await res.json();
+				if (data.installed_source === 'release') releaseVersion = data.installed ?? null;
+			}
+		} catch { /* non-fatal */ }
+	});
 </script>
 
 <svelte:head>
@@ -133,8 +147,21 @@
 			{@render children()}
 		</main>
 
-		<!-- Footer: git info -->
-		{#if gitHash}
+		<!-- Footer: release version or git info -->
+		{#if releaseVersion}
+		<footer class="shrink-0 px-6 py-2 border-t border-surface-200-800">
+			<a
+				href="https://github.com/gabnou/house-bot/releases/tag/{releaseVersion}"
+				target="_blank"
+				rel="noopener noreferrer"
+				class="inline-flex items-center gap-1.5 font-mono text-[11px]
+				text-surface-400-600 hover:text-primary-400 transition-colors"
+			>
+				<span>🔖</span>
+				<span>{releaseVersion}</span>
+			</a>
+		</footer>
+		{:else if gitHash}
 		<footer class="shrink-0 px-6 py-2 border-t border-surface-200-800">
 			<a
 				href={gitCommitUrl || undefined}

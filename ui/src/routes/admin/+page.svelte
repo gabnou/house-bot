@@ -540,7 +540,7 @@
 		<div class="px-5 py-3.5 border-b border-surface-200-800 flex items-center gap-2">
 			<span>🔄</span>
 			<h3 class="font-semibold text-sm">HouseBot Software Update</h3>
-			{#if hbInstalledTag}
+			{#if hbInstalledSource === 'release' && hbInstalledTag}
 				<span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-100-900 text-surface-400-600">{hbInstalledTag}</span>
 			{/if}
 			<a
@@ -552,55 +552,50 @@
 			>GitHub ↗</a>
 		</div>
 		<div class="p-5 space-y-3">
-			<!-- Version box -->
-			<div class="flex items-center gap-3 px-4 py-3 rounded-xl border
-				{hbInstalledTag === null
-					? 'border-surface-200-800 bg-surface-100-900/50'
-					: hbInstalledSource === 'git'
-						? 'border-surface-300-700 bg-surface-100-900/50'
-						: hbUpdateAvailable
-							? 'border-warning-500/40 bg-warning-500/5'
-							: 'border-success-500/40 bg-success-500/5'}">
-				<div class="w-2.5 h-2.5 rounded-full shrink-0
-					{hbInstalledTag === null
-						? 'bg-surface-400-600'
-						: hbInstalledSource === 'git'
-							? 'bg-surface-400-600'
-							: hbUpdateAvailable ? 'bg-warning-400' : 'bg-success-500'}"></div>
-				<div class="flex-1">
-					<p class="text-xs font-semibold">
-						{#if hbInstalledTag === null}
-							{hbVersionBusy ? 'Checking version…' : 'Checking version…'}
-						{:else if hbInstalledSource === 'git'}
-							🛠 Running from git clone — no release version
-						{:else if hbUpdateAvailable}
-							⚠️ Update available
-						{:else}
-							✅ Up to date
-						{/if}
-					</p>
-					{#if hbInstalledTag}
-						<p class="text-[10px] text-surface-400-600 mt-0.5">
-							{hbInstalledSource === 'git'
-								? hbInstalledTag
-								: hbUpdateAvailable && hbLatestTag
-									? `${hbInstalledTag} → ${hbLatestTag}`
-									: hbInstalledTag}
+
+			{#if hbVersionBusy || hbInstalledTag === null}
+				<!-- Loading -->
+				<p class="text-xs text-surface-400-600">Checking version…</p>
+
+			{:else if hbInstalledSource === 'git'}
+				<!-- Git clone install — just point to footer -->
+				<div class="flex items-start gap-3 px-4 py-3 rounded-xl border border-surface-300-700 bg-surface-100-900/50">
+					<span class="text-base mt-0.5">🛠</span>
+					<div>
+						<p class="text-xs font-semibold">Running from a git clone</p>
+						<p class="text-[11px] text-surface-400-600 mt-0.5">
+							No release version available. Build information is shown in the page footer.
 						</p>
+					</div>
+				</div>
+
+			{:else}
+				<!-- Release install — version check + Update Now -->
+				<div class="flex items-center gap-3 px-4 py-3 rounded-xl border
+					{hbUpdateAvailable ? 'border-warning-500/40 bg-warning-500/5' : 'border-success-500/40 bg-success-500/5'}">
+					<div class="w-2.5 h-2.5 rounded-full shrink-0
+						{hbUpdateAvailable ? 'bg-warning-400' : 'bg-success-500'}"></div>
+					<div class="flex-1">
+						<p class="text-xs font-semibold">
+							{hbUpdateAvailable ? '⚠️ Update available' : '✅ Up to date'}
+						</p>
+						<p class="text-[10px] text-surface-400-600 mt-0.5">
+							{hbUpdateAvailable && hbLatestTag ? `${hbInstalledTag} → ${hbLatestTag}` : hbInstalledTag}
+						</p>
+					</div>
+					{#if hbUpdateAvailable}
+						<button
+							onclick={upgradeHousebot}
+							disabled={hbUpgradeStatus === 'running'}
+							class="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium
+							bg-warning-500/20 text-warning-400 hover:bg-warning-500/30
+							transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+						>
+							{hbUpgradeStatus === 'running' ? '…' : '⬆️ Update Now'}
+						</button>
 					{/if}
 				</div>
-				{#if hbUpdateAvailable && hbInstalledSource === 'release'}
-					<button
-						onclick={upgradeHousebot}
-						disabled={hbUpgradeStatus === 'running'}
-						class="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium
-						bg-warning-500/20 text-warning-400 hover:bg-warning-500/30
-						transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-					>
-						{hbUpgradeStatus === 'running' ? '…' : '⬆️ Update Now'}
-					</button>
-				{/if}
-			</div>
+			{/if}
 
 			<!-- Upgrade progress panel -->
 			{#if hbUpgradeStatus !== 'idle'}
