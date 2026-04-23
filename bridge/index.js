@@ -273,10 +273,22 @@ async function startBot() {
         if (type !== 'notify') return;
 
         for (const msg of messages) {
-            if (msg.key.remoteJid?.endsWith('@g.us')) continue;
-            if (msg.key.fromMe) continue;
+            const remoteJid = msg.key.remoteJid;
+            const fromMe    = msg.key.fromMe;
+            console.log(`🔍 Message — remoteJid: ${remoteJid} | fromMe: ${fromMe} | pushName: ${msg.pushName || 'unknown'}`);
 
-            const sender = msg.key.remoteJid;
+            if (remoteJid?.endsWith('@g.us')) {
+                console.log(`⏭️  Skipped — group message`);
+                continue;
+            }
+            // Allow fromMe messages only when the remoteJid is a configured partner
+            // (personal-number mode: user sends to themselves / Saved Messages)
+            if (fromMe && !PARTNER.includes(remoteJid)) {
+                console.log(`⏭️  Skipped — fromMe and ${remoteJid} is not a configured partner`);
+                continue;
+            }
+
+            const sender = remoteJid;
             if (!PARTNER.includes(sender)) {
                 console.log(`🚫 Message ignored from: ${sender} (name: ${msg.pushName || 'unknown'})`);
                 continue;

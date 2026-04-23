@@ -1570,6 +1570,44 @@ async def google_auth_revoke():
     return JSONResponse(content={"ok": True, "status": "missing"})
 
 
+class SaveCredentialsRequest(BaseModel):
+    content: str  # raw JSON text of the Google OAuth client credentials
+
+
+@router.put("/install/google-auth/credentials")
+@router.put("/google-auth/credentials")
+async def google_save_credentials(req: SaveCredentialsRequest):
+    """
+    Validate and save the Google OAuth client credentials JSON to
+    creds/client_google_api_calendar.json.
+    """
+    raw = req.content.strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Credentials content is empty.")
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {exc}")
+
+    # Must have the expected Google OAuth structure
+    if not isinstance(parsed, dict) or not (parsed.get("web") or parsed.get("installed")):
+        raise HTTPException(
+            status_code=400,
+            detail="Not a valid Google OAuth credentials file — expected a 'web' or 'installed' key.",
+        )
+    client_section = parsed.get("web") or parsed.get("installed")
+    if not (client_section.get("client_id") and client_section.get("client_secret")):
+        raise HTTPException(
+            status_code=400,
+            detail="Credentials file is missing 'client_id' or 'client_secret'.",
+        )
+
+    _CREDS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _CREDS_PATH.write_text(raw, encoding="utf-8")
+    logger.info("✅ Google OAuth credentials saved to %s", _CREDS_PATH)
+    return JSONResponse(content={"ok": True})
+
+
 @router.get("/install/google-auth/calendars")
 @router.get("/google-auth/calendars")
 async def google_list_calendars():
@@ -1663,10 +1701,13 @@ async def get_sender_restrictions():
 @router.post("/install/sender-restrictions/scan")
 async def scan_sender_restrictions():
     """
-    Parse bridge.log for recent unauthorized sender JIDs.
-    Looks for '🚫 Message ignored from: <JID>' lines emitted by the bridge
-    whenever a message arrives from a number not in PARTNER_LID.
-    Returns a de-duplicated list of detected senders with their phone number.
+    Parse bridge.log for recent sender JIDs.
+    Looks for two log patterns emitted by the bridge:
+      1. '🚫 Message ignored from: <JID>' — sender not in PARTNER_LID
+      2. '🔍 Message — remoteJid: <JID> | fromMe: false' — visible before partner check
+    The second pattern also catches the case where fromMe:true silently drops the
+    message (personal account), exposing the JID for the user to add.
+    Returns a de-duplicated list of detected senders.
     """
     log_path = _KNOWN_LOGS["bridge"]
     if not log_path.exists():
@@ -1682,24 +1723,38 @@ async def scan_sender_restrictions():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not read bridge.log: {e}")
 
-    ignored_pattern = re.compile(r"Message ignored from: (\S+@\S+)(?: \(name: (.+?)\))?")  
+    # Pattern 1: explicit "ignored" line — carries name
+    ignored_pattern    = re.compile(r"Message ignored from: (\S+@\S+)(?: \(name: (.+?)\))?")
+    # Pattern 2: diagnostic line logged before all filters (lenient middle match)
+    diagnostic_pattern = re.compile(r"Message .+ remoteJid: (\S+@\S+) \| fromMe: \S+ \| pushName: (.+)")
+    # Pattern 3: fromMe skip line — logged when personal-number mode, JID not yet configured
+    fromme_pattern     = re.compile(r"Skipped .+ fromMe and (\S+@\S+) is not a configured partner")
 
     seen: dict[str, dict] = {}
+
+    def _add(jid: str, name: str) -> None:
+        if jid not in seen:
+            seen[jid] = {
+                "jid": jid,
+                "type": jid.split("@")[1] if "@" in jid else "",
+                "name": name if name not in ("unknown", "") else "",
+                "already_authorized": jid in authorized,
+            }
+
     for line in tail:
         m = ignored_pattern.search(line)
         if m:
-            jid  = m.group(1)
-            name = (m.group(2) or "").strip()
-            if name == "unknown":
-                name = ""
-            if jid not in seen:
-                jid_type = jid.split("@")[1] if "@" in jid else ""
-                seen[jid] = {
-                    "jid": jid,
-                    "type": jid_type,
-                    "name": name,
-                    "already_authorized": jid in authorized,
-                }
+            _add(m.group(1), (m.group(2) or "").strip())
+            continue
+
+        m2 = diagnostic_pattern.search(line)
+        if m2:
+            _add(m2.group(1), m2.group(2).strip())
+            continue
+
+        m3 = fromme_pattern.search(line)
+        if m3:
+            _add(m3.group(1), "")
 
     return JSONResponse(content={"senders": list(seen.values())})
 

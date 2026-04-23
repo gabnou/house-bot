@@ -197,6 +197,7 @@ _header
 _step "Step 6 — Starting HouseBot"
 
 mkdir -p "$PROJECT_DIR/logs"
+mkdir -p "$PROJECT_DIR/creds"
 
 # Create .env from .env.example if missing
 if [[ ! -f "$PROJECT_DIR/.env" ]]; then
