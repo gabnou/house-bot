@@ -179,11 +179,19 @@
 		}
 	}
 
+	// Git info — injected at build time by vite.config.ts
+	declare const __GIT_HASH__: string;
+	declare const __GIT_DATE__: string;
+	declare const __GIT_BRANCH__: string;
+	declare const __GIT_COMMIT_URL__: string;
+	const gitHash      = __GIT_HASH__;
+	const gitDate      = __GIT_DATE__;
+	const gitBranch    = __GIT_BRANCH__;
+	const gitCommitUrl = __GIT_COMMIT_URL__;
+
 	// ── HouseBot Software Update state ─────────────────────────────────────
 	let hbInstalledTag = $state<string | null>(null);
-	let hbInstalledSource = $state<string | null>(null); // 'release' | 'git-tag' | 'git-dev' | null
-	let hbLatestTag = $state<string | null>(null);
-	let hbUpdateAvailable = $state<boolean | null>(null);
+	let hbInstalledSource = $state<string | null>(null); // 'release' | 'git' | null
 	let hbVersionBusy = $state(false);
 	let hbRepoUrl = $state('https://github.com/gabnou/house-bot');
 
@@ -208,10 +216,7 @@
 			if (hbUpgradeStatus === 'done' || hbUpgradeStatus === 'failed') {
 				stopHbPoll();
 				if (hbUpgradeStatus === 'done') {
-					hbUpdateAvailable = null;
-					hbInstalledTag = null;
-					hbInstalledSource = null;
-					hbLatestTag = null;
+					checkHousebotUpdate();
 				}
 			}
 		} catch { /* non-fatal */ }
@@ -225,8 +230,6 @@
 				const data = await res.json();
 				hbInstalledTag = data.installed ?? null;
 				hbInstalledSource = data.installed_source ?? null;
-				hbLatestTag = data.latest ?? null;
-				hbUpdateAvailable = data.update_available ?? false;
 				hbRepoUrl = data.repo_url ?? hbRepoUrl;
 			}
 		} catch { /* non-fatal */ } finally {
@@ -553,9 +556,28 @@
 		</div>
 		<div class="p-5 space-y-3">
 
-			{#if hbVersionBusy || hbInstalledTag === null}
+			{#if hbVersionBusy}
 				<!-- Loading -->
 				<p class="text-xs text-surface-400-600">Checking version…</p>
+
+			{:else if hbInstalledSource === 'release'}
+				<!-- Release install — show version + Update Now -->
+				<div class="flex items-center gap-3 px-4 py-3 rounded-xl border border-success-500/40 bg-success-500/5">
+					<div class="w-2.5 h-2.5 rounded-full shrink-0 bg-success-500"></div>
+					<div class="flex-1">
+						<p class="text-xs font-semibold">Release install</p>
+						<p class="text-[10px] text-surface-400-600 mt-0.5">{hbInstalledTag}</p>
+					</div>
+					<button
+						onclick={upgradeHousebot}
+						disabled={hbUpgradeStatus === 'running'}
+						class="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium
+						bg-primary-500/20 text-primary-400 hover:bg-primary-500/30
+						transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+					>
+						{hbUpgradeStatus === 'running' ? '…' : '⬆️ Update Now'}
+					</button>
+				</div>
 
 			{:else if hbInstalledSource === 'git'}
 				<!-- Git clone install — just point to footer -->
@@ -570,30 +592,30 @@
 				</div>
 
 			{:else}
-				<!-- Release install — version check + Update Now -->
-				<div class="flex items-center gap-3 px-4 py-3 rounded-xl border
-					{hbUpdateAvailable ? 'border-warning-500/40 bg-warning-500/5' : 'border-success-500/40 bg-success-500/5'}">
-					<div class="w-2.5 h-2.5 rounded-full shrink-0
-						{hbUpdateAvailable ? 'bg-warning-400' : 'bg-success-500'}"></div>
-					<div class="flex-1">
-						<p class="text-xs font-semibold">
-							{hbUpdateAvailable ? '⚠️ Update available' : '✅ Up to date'}
+				<!-- Fallback: version check failed — likely a git checkout -->
+				<div class="flex items-start gap-3 px-4 py-3 rounded-xl border border-surface-300-700 bg-surface-100-900/50">
+					<span class="text-base mt-0.5">🛠</span>
+					<div>
+						<p class="text-xs font-semibold">Not a versioned release install</p>
+						<p class="text-[11px] text-surface-400-600 mt-0.5">
+							This looks like a git checkout. No release version available.
 						</p>
-						<p class="text-[10px] text-surface-400-600 mt-0.5">
-							{hbUpdateAvailable && hbLatestTag ? `${hbInstalledTag} → ${hbLatestTag}` : hbInstalledTag}
-						</p>
+						{#if gitHash}
+							<a
+								href={gitCommitUrl || undefined}
+								target="_blank"
+								rel="noopener noreferrer"
+								class="inline-flex items-center gap-1 font-mono text-[11px] text-surface-400-600 hover:text-primary-400 transition-colors mt-1"
+							>
+								<span>⎇</span>
+								<span>{gitBranch}</span>
+								<span class="opacity-50">·</span>
+								<span>{gitHash}</span>
+								<span class="opacity-50">·</span>
+								<span>{gitDate}</span>
+							</a>
+						{/if}
 					</div>
-					{#if hbUpdateAvailable}
-						<button
-							onclick={upgradeHousebot}
-							disabled={hbUpgradeStatus === 'running'}
-							class="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium
-							bg-warning-500/20 text-warning-400 hover:bg-warning-500/30
-							transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-						>
-							{hbUpgradeStatus === 'running' ? '…' : '⬆️ Update Now'}
-						</button>
-					{/if}
 				</div>
 			{/if}
 

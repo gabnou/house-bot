@@ -450,14 +450,13 @@ def _git(*args: str) -> str:
 
 @router.get("/housebot/version")
 async def housebot_version():
-    """Return the installed version and latest GitHub release.
+    """Return the installed version.
 
     Two states only:
     - source = "release"  → release.json present (installed from a release zip or upgraded)
     - source = "git"      → release.json absent  (running from a git clone)
     """
     import json as _json
-    import requests as _req
 
     installed: str | None = None
     installed_source: str | None = None
@@ -480,47 +479,14 @@ async def housebot_version():
             branch = _git("rev-parse", "--abbrev-ref", "HEAD") or None
             if commit:
                 installed = f"{branch}@{commit}" if branch and branch != "HEAD" else commit
+            else:
+                installed = "unknown"
         except Exception:
             installed = "unknown"
-
-    # ── Latest GitHub release (only relevant for release installs) ────────────
-    latest: str | None = None
-    update_available = False
-    if installed_source == "release":
-        try:
-            r = _req.get(
-                f"https://api.github.com/repos/{_GITHUB_REPO}/releases",
-                headers={"Accept": "application/vnd.github.v3+json"},
-                params={"per_page": 10},
-                timeout=8,
-            )
-            if r.status_code == 200:
-                releases = [rel for rel in r.json() if not rel.get("draft") and not rel.get("prerelease")]
-                if releases:
-                    latest = releases[0].get("tag_name") or None
-        except Exception:
-            pass
-
-        if installed and latest and installed != latest:
-            def _tag_key(t: str) -> tuple:
-                parts = t.lstrip("v").replace("-", ".").split(".")
-                nums = []
-                for p in parts:
-                    try:
-                        nums.append(int(p))
-                    except ValueError:
-                        nums.append(0)
-                return tuple(nums)
-            try:
-                update_available = _tag_key(latest) > _tag_key(installed)
-            except Exception:
-                update_available = installed != latest
 
     return JSONResponse(content={
         "installed": installed,
         "installed_source": installed_source,
-        "latest": latest,
-        "update_available": update_available,
         "repo_url": f"https://github.com/{_GITHUB_REPO}",
     })
 
