@@ -1780,7 +1780,48 @@ async def authorize_sender(req: AuthorizeSenderRequest):
     _env_set("PARTNER_LID", new_value)
     os.environ["PARTNER_LID"] = new_value
 
+    # Hot-reload the bridge's in-memory partner list so the new JID takes
+    # effect immediately without restarting the bridge process.
+    try:
+        import requests as _req
+        _req.post("http://localhost:3001/reload-partners", timeout=3)
+    except Exception:
+        pass  # bridge may not be running; non-fatal
+
     logger.info("✅ Sender authorized: %s (%s)", jid, name or "no name")
+    return JSONResponse(content={"ok": True, "partners": _partners_list()})
+
+
+class RemoveSenderRequest(BaseModel):
+    jid: str
+
+
+@router.delete("/install/sender-restrictions")
+async def remove_sender(req: RemoveSenderRequest):
+    """Remove a JID from PARTNER_LID in .env and hot-reload the bridge."""
+    jid = req.jid.strip()
+    if not jid or "@" not in jid:
+        raise HTTPException(status_code=400, detail="Invalid JID")
+
+    entries = _parse_partner_entries(os.getenv("PARTNER_LID", ""))
+    filtered = [e for e in entries if e["jid"] != jid]
+    if len(filtered) == len(entries):
+        raise HTTPException(status_code=404, detail="JID not found in PARTNER_LID")
+
+    new_value = ",".join(
+        f"{e['jid']}:{e['name']}" if e["name"] else e["jid"]
+        for e in filtered
+    )
+    _env_set("PARTNER_LID", new_value)
+    os.environ["PARTNER_LID"] = new_value
+
+    try:
+        import requests as _req
+        _req.post("http://localhost:3001/reload-partners", timeout=3)
+    except Exception:
+        pass
+
+    logger.info("🗑️  Sender removed: %s", jid)
     return JSONResponse(content={"ok": True, "partners": _partners_list()})
 
 

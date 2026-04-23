@@ -965,6 +965,31 @@
 	let scanDone         = $state(false);
 	let authorizingJid   = $state<string | null>(null);
 	let authorizeError   = $state<string | null>(null);
+	let removingJid      = $state<string | null>(null);
+	let removeError      = $state<string | null>(null);
+
+	async function removeSender(jid: string) {
+		removingJid = jid;
+		removeError = null;
+		try {
+			const res = await fetch('/admin/api/install/sender-restrictions', {
+				method: 'DELETE',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ jid }),
+			});
+			if (res.ok) {
+				const data = await res.json();
+				authorizedPartners = data.partners ?? [];
+			} else {
+				const err = await res.json().catch(() => ({}));
+				removeError = err.detail ?? `HTTP ${res.status}`;
+			}
+		} catch (e) {
+			removeError = e instanceof Error ? e.message : 'Request failed';
+		} finally {
+			removingJid = null;
+		}
+	}
 
 	const step4Done = $derived(authorizedPartners.length > 0);
 
@@ -2166,9 +2191,19 @@
 									<p class="text-xs font-semibold">{partner.name || '—'}</p>
 									<p class="text-[10px] text-surface-400-600 font-mono">{partner.jid}</p>
 								</div>
-								<span class="px-2 py-0.5 rounded-full text-xs font-medium bg-success-500/15 text-success-400 shrink-0">authorized</span>
+								<button
+									onclick={() => removeSender(partner.jid)}
+									disabled={removingJid === partner.jid}
+									title="Remove sender"
+									class="shrink-0 px-2 py-1 rounded text-xs font-medium text-error-400/70
+									hover:text-error-400 hover:bg-error-500/10 transition-colors
+									disabled:opacity-40 disabled:cursor-not-allowed"
+								>{removingJid === partner.jid ? '…' : '✕'}</button>
 							</div>
 						{/each}
+						{#if removeError}
+							<p class="text-xs text-error-400">❌ {removeError}</p>
+						{/if}
 					</div>
 				{/if}
 
