@@ -217,6 +217,7 @@ stop() {
         rm -f "$LOG_DIR/ui.pid"
         echo "✅ UI dev server stopped"
     fi
+    kill -9 $(lsof -ti :5252) 2>/dev/null
 
     echo ""
     echo "💤 HouseBot stopped (Ollama unchanged)."
@@ -331,11 +332,11 @@ ui_stop() {
     if [ -f "$LOG_DIR/ui.pid" ] && kill -0 $(cat "$LOG_DIR/ui.pid") 2>/dev/null; then
         kill $(cat "$LOG_DIR/ui.pid") 2>/dev/null
         rm -f "$LOG_DIR/ui.pid"
-        echo "✅ UI dev server stopped"
     else
-        echo "ℹ️  UI dev server was not running"
         rm -f "$LOG_DIR/ui.pid" 2>/dev/null
     fi
+    kill -9 $(lsof -ti :5252) 2>/dev/null
+    echo "✅ UI dev server stopped"
 }
 
 case "$1" in
