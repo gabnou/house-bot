@@ -329,21 +329,28 @@ async def ollama_version():
 
     base = _ollama_base()
 
-    # Installed version — try Ollama server API first, fall back to CLI
+    # Installed version — prefer CLI binary (reflects actual installed package),
+    # fall back to running server API (which may be a stale daemon).
     installed: str | None = None
     try:
-        r = _req.get(f"{base}/api/version", timeout=3)
-        if r.status_code == 200:
-            installed = r.json().get("version")
+        result = subprocess.run(
+            ["ollama", "--version"], capture_output=True, text=True, timeout=5
+        )
+        # Output may be multi-line, e.g.:
+        #   ollama version is 0.21.0
+        #   Warning: client version is 0.21.1
+        # We want the *client* (binary) version, which is the last version-like token.
+        import re as _re
+        versions = _re.findall(r'\d+\.\d+\.\d+', result.stdout)
+        if versions:
+            installed = versions[-1]  # last match = client/binary version
     except Exception:
         pass
     if not installed:
         try:
-            result = subprocess.run(
-                ["ollama", "--version"], capture_output=True, text=True, timeout=5
-            )
-            parts = result.stdout.strip().split()
-            installed = parts[-1] if parts else None
+            r = _req.get(f"{base}/api/version", timeout=3)
+            if r.status_code == 200:
+                installed = r.json().get("version")
         except Exception:
             pass
 
@@ -424,6 +431,194 @@ async def ollama_upgrade():
     threading.Thread(target=_do_upgrade, daemon=True).start()
     logger.info("⬆️ Ollama upgrade initiated via brew")
     return JSONResponse(content={"ok": True, "message": "Upgrade started."})
+
+
+# ── HouseBot Software Update ─────────────────────────────────────────────────
+
+_GITHUB_REPO = "gabnou/house-bot"
+
+def _git(*args: str) -> str:
+    """Run a git command in PROJECT_ROOT and return stdout (stripped)."""
+    result = subprocess.run(
+        ["git", *args], cwd=str(_PROJECT_ROOT),
+        capture_output=True, text=True, timeout=15,
+    )
+    return result.stdout.strip()
+
+
+@router.get("/housebot/version")
+async def housebot_version():
+    """Return the current git tag and latest GitHub release tag."""
+    import requests as _req
+
+    # Current tag (exact tag if on one, otherwise latest reachable tag)
+    installed: str | None = None
+    try:
+        installed = _git("describe", "--tags", "--exact-match") or None
+    except Exception:
+        pass
+    if not installed:
+        try:
+            installed = _git("describe", "--tags", "--abbrev=0") or None
+        except Exception:
+            pass
+
+    # Latest tag from GitHub — try releases first, fall back to tags list
+    latest: str | None = None
+    try:
+        r = _req.get(
+            f"https://api.github.com/repos/{_GITHUB_REPO}/releases/latest",
+            headers={"Accept": "application/vnd.github.v3+json"},
+            timeout=8,
+        )
+        if r.status_code == 200:
+            latest = r.json().get("tag_name") or None
+    except Exception:
+        pass
+    if not latest:
+        # Fall back to the tags API (sorted by newest first server-side)
+        try:
+            r = _req.get(
+                f"https://api.github.com/repos/{_GITHUB_REPO}/tags",
+                headers={"Accept": "application/vnd.github.v3+json"},
+                timeout=8,
+            )
+            if r.status_code == 200:
+                tags = r.json()
+                if tags:
+                    latest = tags[0].get("name") or None
+        except Exception:
+            pass
+
+    update_available = False
+    if installed and latest and installed != latest:
+        # Compare using tuple of date-like or semver parts
+        def _tag_key(t: str) -> tuple:
+            parts = t.lstrip("v").replace("-", ".").split(".")
+            nums = []
+            for p in parts:
+                try:
+                    nums.append(int(p))
+                except ValueError:
+                    nums.append(0)
+            return tuple(nums)
+        try:
+            update_available = _tag_key(latest) > _tag_key(installed)
+        except Exception:
+            update_available = installed != latest
+
+    return JSONResponse(content={
+        "installed": installed,
+        "latest": latest,
+        "update_available": update_available,
+        "repo_url": f"https://github.com/{_GITHUB_REPO}",
+    })
+
+
+_hb_upgrade_state: dict = {"status": "idle", "log": [], "exit_code": None}
+_hb_upgrade_lock = threading.Lock()
+
+
+@router.get("/housebot/upgrade/status")
+async def housebot_upgrade_status():
+    """Return the current state of a HouseBot upgrade."""
+    with _hb_upgrade_lock:
+        return JSONResponse(content=dict(_hb_upgrade_state))
+
+
+@router.post("/housebot/upgrade")
+async def housebot_upgrade():
+    """Upgrade HouseBot: fetch latest tag, checkout, ui-build, restart."""
+    import requests as _req
+
+    with _hb_upgrade_lock:
+        if _hb_upgrade_state["status"] == "running":
+            return JSONResponse(content={"ok": False, "message": "Upgrade already in progress."})
+        _hb_upgrade_state.update({"status": "running", "log": [], "exit_code": None})
+
+    # Resolve the latest tag before starting the thread — releases first, tags fallback
+    latest_tag: str | None = None
+    try:
+        r = _req.get(
+            f"https://api.github.com/repos/{_GITHUB_REPO}/releases/latest",
+            headers={"Accept": "application/vnd.github.v3+json"},
+            timeout=8,
+        )
+        if r.status_code == 200:
+            latest_tag = r.json().get("tag_name") or None
+    except Exception:
+        pass
+    if not latest_tag:
+        try:
+            r = _req.get(
+                f"https://api.github.com/repos/{_GITHUB_REPO}/tags",
+                headers={"Accept": "application/vnd.github.v3+json"},
+                timeout=8,
+            )
+            if r.status_code == 200:
+                tags = r.json()
+                if tags:
+                    latest_tag = tags[0].get("name") or None
+        except Exception:
+            pass
+
+    if not latest_tag:
+        with _hb_upgrade_lock:
+            _hb_upgrade_state.update({"status": "failed", "log": ["Could not resolve latest release tag from GitHub."], "exit_code": 1})
+        return JSONResponse(content={"ok": False, "message": "Could not resolve latest release tag."})
+
+    def _log(msg: str):
+        with _hb_upgrade_lock:
+            _hb_upgrade_state["log"].append(msg)
+            if len(_hb_upgrade_state["log"]) > 100:
+                _hb_upgrade_state["log"] = _hb_upgrade_state["log"][-100:]
+
+    def _run_step(cmd: list[str], cwd: str | None = None) -> int:
+        proc = subprocess.Popen(
+            cmd, cwd=cwd or str(_PROJECT_ROOT),
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            _log(line.rstrip())
+        proc.wait(timeout=300)
+        return proc.returncode
+
+    def _do_hb_upgrade():
+        try:
+            _log(f"→ Fetching tags from origin…")
+            rc = _run_step(["git", "fetch", "--tags", "--force"])
+            if rc != 0:
+                raise RuntimeError(f"git fetch failed (exit {rc})")
+
+            _log(f"→ Checking out {latest_tag}…")
+            rc = _run_step(["git", "checkout", latest_tag])
+            if rc != 0:
+                raise RuntimeError(f"git checkout {latest_tag} failed (exit {rc})")
+
+            _log("→ Building UI…")
+            rc = _run_step(["bash", _HOUSEBOT_SH, "ui-build"])
+            if rc != 0:
+                raise RuntimeError(f"ui-build failed (exit {rc})")
+
+            _log("✅ Update complete. Restarting HouseBot in 3s…")
+            with _hb_upgrade_lock:
+                _hb_upgrade_state.update({"status": "done", "exit_code": 0})
+
+            # Detached restart — housebot.sh will kill this process
+            subprocess.Popen(
+                ["bash", "-c", f"sleep 3 && bash '{_HOUSEBOT_SH}' restart"],
+                close_fds=True, start_new_session=True,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        except Exception as exc:
+            _log(f"❌ {exc}")
+            with _hb_upgrade_lock:
+                _hb_upgrade_state.update({"status": "failed", "exit_code": 1})
+
+    threading.Thread(target=_do_hb_upgrade, daemon=True).start()
+    logger.info("⬆️ HouseBot upgrade initiated → %s", latest_tag)
+    return JSONResponse(content={"ok": True, "message": f"Upgrade to {latest_tag} started."})
 
 
 class SwitchModelRequest(BaseModel):
@@ -778,27 +973,46 @@ async def service_start(service: str):
     return JSONResponse(content={"ok": True, "service": service, "action": "start"})
 
 
+_HOUSEBOT_SH = str(_PROJECT_ROOT / "housebot.sh")
+
+
+def _run_housebot_detached(command: str) -> None:
+    """Run housebot.sh <command> in a fully detached process.
+
+    Uses 'sleep 3 &&' so FastAPI has time to send the HTTP response before
+    housebot.sh stop/restart kills this process.
+    """
+    subprocess.Popen(
+        ["bash", "-c", f"sleep 3 && bash '{_HOUSEBOT_SH}' {command}"],
+        close_fds=True,
+        start_new_session=True,  # detach from this process group
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
 @router.post("/services/restart-all")
 async def restart_all():
-    """Restart FastAPI, Bridge, and Scheduler."""
-    for svc in ("fastapi", "bridge", "scheduler"):
-        _stop_service(svc)
-    import asyncio
-    await asyncio.sleep(2)
-    _start_bridge()
-    _start_scheduler()
-    # FastAPI restart is self-defeating since it kills itself — signal the process group instead
-    logger.info("🔄 All services restarting")
+    """Restart all HouseBot services via housebot.sh restart."""
+    _run_housebot_detached("restart")
+    logger.info("🔄 Restart-all delegated to housebot.sh (detached)")
     return JSONResponse(content={"ok": True, "action": "restart-all"})
 
 
 @router.post("/services/stop-all")
 async def stop_all():
-    """Stop FastAPI, Bridge, and Scheduler."""
-    for svc in ("bridge", "scheduler"):
-        _stop_service(svc)
-    logger.info("⏹️  Bridge + Scheduler stopped")
+    """Stop all HouseBot services via housebot.sh stop."""
+    _run_housebot_detached("stop")
+    logger.info("⏹️  Stop-all delegated to housebot.sh (detached)")
     return JSONResponse(content={"ok": True, "action": "stop-all"})
+
+
+@router.post("/services/start-all")
+async def start_all():
+    """Start all HouseBot services via housebot.sh start."""
+    _run_housebot_detached("start")
+    logger.info("▶️  Start-all delegated to housebot.sh (detached)")
+    return JSONResponse(content={"ok": True, "action": "start-all"})
 
 
 # ── Prompt Editor ────────────────────────────────────────────────────────────
