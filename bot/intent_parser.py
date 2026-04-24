@@ -1,5 +1,7 @@
 import logging
+import math
 import os
+import threading
 import requests
 import json
 import re
@@ -10,6 +12,91 @@ logger = logging.getLogger(__name__)
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
 MODEL = os.getenv("OLLAMA_MODEL", "mistral-small:22b")
+EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text:latest")
+_OLLAMA_BASE = OLLAMA_URL.rsplit("/api/", 1)[0]
+EMBED_URL = f"{_OLLAMA_BASE}/api/embeddings"
+
+# Anchor phrases per category — used to build mean embedding vectors for cosine-similarity classification
+_CATEGORY_ANCHORS: dict[str, list[str]] = {
+    "shopping": [
+        "add to the shopping list",
+        "remove item from grocery list",
+        "we need to buy milk",
+        "out of bread, eggs, butter",
+        "add bananas to the list",
+        "what do we need to buy",
+        "supermarket provisions and supplies",
+    ],
+    "weather": [
+        "what is the weather forecast",
+        "will it rain today",
+        "temperature tomorrow",
+        "how is the weather outside",
+        "forecast for the next days",
+        "is it going to be sunny",
+        "wind and humidity conditions",
+    ],
+    "calendar": [
+        "add event to calendar",
+        "what do I have scheduled today",
+        "create an appointment",
+        "what is on my agenda this week",
+        "set a reminder for tomorrow",
+        "schedule a meeting",
+        "upcoming events and appointments",
+    ],
+}
+
+_anchor_cache: dict[str, list[float]] | None = None
+_anchor_lock = threading.Lock()
+
+
+def _get_embedding(text: str) -> list[float] | None:
+    """Return the embedding vector for *text* using the embed model."""
+    keep_alive = os.getenv("OLLAMA_KEEP_ALIVE", "5m")
+    try:
+        resp = requests.post(EMBED_URL, json={
+            "model": EMBED_MODEL,
+            "prompt": text,
+            "keep_alive": keep_alive,
+        }, timeout=15)
+        return resp.json().get("embedding")
+    except Exception as e:
+        logger.warning("⚠️ _get_embedding error: %s", e)
+        return None
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def _mean_vec(vecs: list[list[float]]) -> list[float]:
+    n, dim = len(vecs), len(vecs[0])
+    return [sum(v[i] for v in vecs) / n for i in range(dim)]
+
+
+def preload_embed_anchors() -> None:
+    """Pre-compute mean anchor embeddings for each category and warm up the embed model.
+    Safe to call from a background thread; idempotent (skips if already cached)."""
+    global _anchor_cache
+    with _anchor_lock:
+        if _anchor_cache is not None:
+            return
+        cache: dict[str, list[float]] = {}
+        for category, phrases in _CATEGORY_ANCHORS.items():
+            vecs = [v for p in phrases if (v := _get_embedding(p)) is not None]
+            if vecs:
+                cache[category] = _mean_vec(vecs)
+                logger.debug("🧬 Anchor cached for '%s' (%d/%d phrases)", category, len(vecs), len(phrases))
+            else:
+                logger.warning("⚠️ No anchor embeddings computed for '%s'", category)
+        _anchor_cache = cache
+    logger.info("🧬 Embedding anchors ready (%d categories).", len(cache))
 
 
 def detect_category(text: str) -> str | None:
@@ -25,10 +112,37 @@ def detect_category(text: str) -> str | None:
     return None
 
 
+def _classify_by_embedding(text: str) -> str | None:
+    """Classify category via cosine similarity against anchor embeddings.
+    Returns the best-match category if similarity >= 0.50, else None."""
+    global _anchor_cache
+    if _anchor_cache is None:
+        preload_embed_anchors()
+    if not _anchor_cache:
+        return None
+    vec = _get_embedding(text)
+    if vec is None:
+        return None
+    scores = {cat: _cosine_similarity(vec, anchor) for cat, anchor in _anchor_cache.items()}
+    best = max(scores, key=scores.__getitem__)
+    best_score = scores[best]
+    logger.debug("🧬 embed scores: %s → best=%s (%.3f)", scores, best, best_score)
+    return best if best_score >= 0.50 else None
+
+
 def classify_intent_category(text: str) -> str | None:
-    """Use the LLM to classify translated text into shopping, calendar, weather or none.
-    This is a fallback for when detect_category() fails on translated text that
-    doesn't start with an exact keyword (e.g. 'forecast tomorrow' instead of 'weather tomorrow')."""
+    """Classify translated text into shopping, calendar, weather or none.
+    First attempts fast embedding-based cosine similarity; falls back to LLM
+    only when the embedding model is unavailable or confidence is below threshold.
+    This is the fallback for when detect_category() finds no keyword match."""
+    # Fast path: embedding cosine similarity
+    embed_result = _classify_by_embedding(text)
+    if embed_result:
+        logger.debug("🧬 classify_intent_category (embed) → '%s' for: %s", embed_result, text)
+        return embed_result
+
+    # Fallback: LLM classification
+    logger.debug("🏷️ classify_intent_category falling back to LLM for: %s", text)
     prompt = (
         "Classify the following message into one of these categories: shopping, weather, calendar.\n"
         "The message may be a translation from another language and may not start with the exact keyword, "

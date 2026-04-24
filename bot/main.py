@@ -28,7 +28,7 @@ from pydantic import BaseModel
 from contextlib import asynccontextmanager
 from faster_whisper import WhisperModel
 from services.shopping_db import init_db
-from intent_parser import parse_intent, detect_category, validate_transcription, detect_language, translate_to_english, translate_from_english, classify_intent_category
+from intent_parser import parse_intent, detect_category, validate_transcription, detect_language, translate_to_english, translate_from_english, classify_intent_category, preload_embed_anchors
 from admin.router import router as admin_router
 
 WHATSAPP_APPNAME = os.getenv("WHATSAPP_APPNAME", "HouseBot").strip()
@@ -82,6 +82,10 @@ async def lifespan(app: FastAPI):
     logger.info("🎤 Loading Whisper model '%s'...", model_name)
     _whisper_model = WhisperModel(model_name, device="cpu", compute_type="int8")
     logger.info("🎤 Whisper ready.")
+    # Warm up the embedding model and pre-compute anchor vectors in the background
+    import threading
+    threading.Thread(target=preload_embed_anchors, daemon=True, name="embed-warmup").start()
+    logger.info("🧬 Embedding anchor preload started in background.")
     yield
 
 # FastAPI app instance

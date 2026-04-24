@@ -128,6 +128,12 @@
 
 	const step1Done = $derived(installedModels.length > 0);
 
+	// Classify models by role: embedding models (nomic-embed-text, etc.) vs. language models
+	const isEmbedModel = (name: string) => /embed/i.test(name);
+	const llmModels    = $derived(installedModelDetails.filter(m => !isEmbedModel(m.name)));
+	const embedModels  = $derived(installedModelDetails.filter(m =>  isEmbedModel(m.name)));
+	const llmModelNames = $derived(installedModels.filter(n => !isEmbedModel(n)));
+
 	// ── Load-time estimator ───────────────────────────────────────────────────
 	// Base times (seconds) measured at ~16 GB unified memory with SSD loading.
 	const MODEL_BASE_SECONDS: Record<string, number> = {
@@ -272,7 +278,8 @@
 				installedModelDetails = raw;
 				installedModels = raw.map(m => m.name);
 				configuredModel = data.configured ?? '';
-				if (!chatModel && installedModels.length > 0) chatModel = installedModels[0];
+				const firstLlm = raw.find(m => !isEmbedModel(m.name))?.name ?? '';
+				if (!chatModel && firstLlm) chatModel = firstLlm;
 			}
 		} catch {
 			// non-fatal
@@ -1404,98 +1411,162 @@
 				<div class="border-t border-surface-200-800 p-4 space-y-5">
 
 					<!-- ── Installed models ─────────────────────────────────────────── -->
-					<div class="space-y-2">
-						<p class="text-xs font-semibold text-surface-400-600 uppercase tracking-wide">Installed models</p>
+				<div class="space-y-4">
 
-						{#if modelsLoading}
-							<p class="text-xs text-surface-400-600">Checking installed models…</p>
-						{:else if installedModelDetails.length === 0 && modelsChecked}
-							<p class="text-xs text-surface-400-600">No models installed yet. Pull one below.</p>
-						{/if}
+					{#if modelsLoading}
+						<p class="text-xs text-surface-400-600">Checking installed models…</p>
+					{:else if installedModelDetails.length === 0 && modelsChecked}
+						<p class="text-xs text-surface-400-600">No models installed yet. Pull one below.</p>
+					{/if}
 
-						{#each installedModelDetails as model}
-							{@const isLoaded = configuredModel === model.name}
-							{@const isDeleting = deletingModel === model.name}
-							{@const isPendingDelete = pendingDeleteModel === model.name}
-							<div class="flex items-center gap-3 p-3 rounded-lg border border-surface-200-800 bg-surface-100-900/40">
-								<div class="flex-1 min-w-0">
-									<div class="flex items-center gap-2 flex-wrap">
-										<span class="text-xs font-mono font-semibold">{model.name}</span>
-										{#if isLoaded}
-											<span class="px-1.5 py-0.5 rounded text-xs bg-primary-500/15 text-primary-400">loaded</span>
-										{/if}
-									</div>
-									<p class="text-xs text-surface-400-600 mt-0.5">
-										{model.params || model.family || ''}
-										{#if model.size_gb > 0} · {model.size_gb} GB on disk{/if}
-									</p>
-									{#if model.tested}
-										<p class="text-[10px] mt-0.5 font-medium text-success-400">✓ tested</p>
-									{:else if model.incompatible}
-										<p class="text-[10px] mt-0.5 font-medium text-error-400">✖ rejected</p>
-									{:else}
-										<p class="text-[10px] mt-0.5 text-surface-400-600/60">untested</p>
-									{/if}
-								</div>
-								<!-- Delete controls -->
-								{#if isPendingDelete}
-									{@const noFallback = isLoaded && installedModelDetails.length === 1}
-									<div class="flex flex-col items-end gap-1.5 shrink-0">
-										{#if noFallback}
-											<span class="text-[10px] text-warning-500 text-right max-w-[200px] leading-tight">
-												⚠️ No other model available — the bot will stop working.
-											</span>
-										{:else if isLoaded}
-											<span class="text-[10px] text-surface-400-600 text-right max-w-[200px] leading-tight">
-												Active model — will switch to {installedModelDetails.find(m => m.name !== model.name)?.name ?? 'next available'}.
-											</span>
-										{/if}
-										<div class="flex items-center gap-2">
-											<span class="text-xs text-error-400">Delete?</span>
-											<button
-												onclick={() => deleteModel(model.name)}
-												disabled={isDeleting}
-												class="px-2 py-1 rounded text-xs font-medium bg-error-500/20 text-error-400
-												hover:bg-error-500/30 border border-error-500/40 transition-colors disabled:opacity-40"
-											>Yes</button>
-											<button
-												onclick={() => pendingDeleteModel = null}
-												class="px-2 py-1 rounded text-xs font-medium border border-surface-300-700
-												text-surface-500-500 hover:bg-surface-100-900 transition-colors"
-											>No</button>
+					<!-- Language models -->
+					{#if llmModels.length > 0 || (!modelsLoading && modelsChecked)}
+						<div class="space-y-2">
+							<p class="text-xs font-semibold text-surface-400-600 uppercase tracking-wide">Language Models</p>
+							{#if llmModels.length === 0}
+								<p class="text-xs text-surface-400-600/60">No language model installed yet.</p>
+							{/if}
+							{#each llmModels as model}
+								{@const isLoaded = configuredModel === model.name}
+								{@const isDeleting = deletingModel === model.name}
+								{@const isPendingDelete = pendingDeleteModel === model.name}
+								<div class="flex items-center gap-3 p-3 rounded-lg border border-surface-200-800 bg-surface-100-900/40">
+									<div class="flex-1 min-w-0">
+										<div class="flex items-center gap-2 flex-wrap">
+											<span class="text-xs font-mono font-semibold">{model.name}</span>
+											{#if isLoaded}
+												<span class="px-1.5 py-0.5 rounded text-xs bg-primary-500/15 text-primary-400">loaded</span>
+											{/if}
 										</div>
+										<p class="text-xs text-surface-400-600 mt-0.5">
+											{model.params || model.family || ''}
+											{#if model.size_gb > 0} · {model.size_gb} GB on disk{/if}
+										</p>
+										{#if model.tested}
+											<p class="text-[10px] mt-0.5 font-medium text-success-400">✓ tested</p>
+										{:else if model.incompatible}
+											<p class="text-[10px] mt-0.5 font-medium text-error-400">✖ rejected</p>
+										{:else}
+											<p class="text-[10px] mt-0.5 text-surface-400-600/60">untested</p>
+										{/if}
 									</div>
-								{:else}
-									<div class="flex items-center gap-1 shrink-0">
-										{#if !isLoaded}
+									<!-- Delete controls -->
+									{#if isPendingDelete}
+										{@const noFallback = isLoaded && llmModels.length === 1}
+										<div class="flex flex-col items-end gap-1.5 shrink-0">
+											{#if noFallback}
+												<span class="text-[10px] text-warning-500 text-right max-w-[200px] leading-tight">
+													⚠️ No other model available — the bot will stop working.
+												</span>
+											{:else if isLoaded}
+												<span class="text-[10px] text-surface-400-600 text-right max-w-[200px] leading-tight">
+													Active model — will switch to {llmModels.find(m => m.name !== model.name)?.name ?? 'next available'}.
+												</span>
+											{/if}
+											<div class="flex items-center gap-2">
+												<span class="text-xs text-error-400">Delete?</span>
+												<button
+													onclick={() => deleteModel(model.name)}
+													disabled={isDeleting}
+													class="px-2 py-1 rounded text-xs font-medium bg-error-500/20 text-error-400
+													hover:bg-error-500/30 border border-error-500/40 transition-colors disabled:opacity-40"
+												>Yes</button>
+												<button
+													onclick={() => pendingDeleteModel = null}
+													class="px-2 py-1 rounded text-xs font-medium border border-surface-300-700
+													text-surface-500-500 hover:bg-surface-100-900 transition-colors"
+												>No</button>
+											</div>
+										</div>
+									{:else}
+										<div class="flex items-center gap-1 shrink-0">
+											{#if !isLoaded}
+												<button
+													onclick={() => loadModel(model.name)}
+													disabled={!!loadingModel || !!deletingModel}
+													title="Load this model as active"
+													class="flex flex-col items-center px-2 py-1 rounded-lg border border-surface-300-700
+													text-surface-500-500 hover:border-primary-500/40 hover:text-primary-400 hover:bg-primary-500/5
+													transition-colors disabled:opacity-40"
+												>
+													<span class="text-xs leading-none">{loadingModel === model.name ? '…' : '▶'}</span>
+													<span class="text-[9px] leading-none mt-0.5">load</span>
+												</button>
+											{/if}
 											<button
-												onclick={() => loadModel(model.name)}
-												disabled={!!loadingModel || !!deletingModel}
-												title="Load this model as active"
+												onclick={() => pendingDeleteModel = model.name}
+												disabled={isDeleting || !!deletingModel || !!loadingModel}
+												title="Remove model from local disk"
 												class="flex flex-col items-center px-2 py-1 rounded-lg border border-surface-300-700
-												text-surface-500-500 hover:border-primary-500/40 hover:text-primary-400 hover:bg-primary-500/5
+												text-surface-500-500 hover:border-error-500/40 hover:text-error-400 hover:bg-error-500/5
 												transition-colors disabled:opacity-40"
 											>
-												<span class="text-xs leading-none">{loadingModel === model.name ? '…' : '▶'}</span>
-												<span class="text-[9px] leading-none mt-0.5">load</span>
+												<span class="text-xs leading-none">{isDeleting ? '…' : '🗑'}</span>
+												<span class="text-[9px] leading-none mt-0.5">delete</span>
 											</button>
-										{/if}
-										<button
-											onclick={() => pendingDeleteModel = model.name}
-											disabled={isDeleting || !!deletingModel || !!loadingModel}
-											title="Remove model from local disk"
-											class="flex flex-col items-center px-2 py-1 rounded-lg border border-surface-300-700
-											text-surface-500-500 hover:border-error-500/40 hover:text-error-400 hover:bg-error-500/5
-											transition-colors disabled:opacity-40"
-										>
-											<span class="text-xs leading-none">{isDeleting ? '…' : '🗑'}</span>
-											<span class="text-[9px] leading-none mt-0.5">delete</span>
-										</button>
-									</div>
-								{/if}
-							</div>
-						{/each}
+										</div>
+									{/if}
+								</div>
+							{/each}
+						</div>
+					{/if}
 
+					<!-- Embedding models -->
+					{#if embedModels.length > 0}
+						<div class="space-y-2">
+							<p class="text-xs font-semibold text-surface-400-600 uppercase tracking-wide">Embedding Models</p>
+							{#each embedModels as model}
+								{@const isDeleting = deletingModel === model.name}
+								{@const isPendingDelete = pendingDeleteModel === model.name}
+								<div class="flex items-center gap-3 p-3 rounded-lg border border-surface-200-800 bg-surface-100-900/40">
+									<div class="flex-1 min-w-0">
+										<div class="flex items-center gap-2 flex-wrap">
+											<span class="text-xs font-mono font-semibold">{model.name}</span>
+											<span class="px-1.5 py-0.5 rounded text-xs bg-tertiary-500/15 text-tertiary-400">embed</span>
+										</div>
+										<p class="text-xs text-surface-400-600 mt-0.5">
+											{model.params || model.family || ''}
+											{#if model.size_gb > 0} · {model.size_gb} GB on disk{/if}
+										</p>
+										<p class="text-[10px] mt-0.5 text-surface-400-600/60">used for multilingual intent classification</p>
+									</div>
+									<!-- Delete controls -->
+									{#if isPendingDelete}
+										<div class="flex flex-col items-end gap-1.5 shrink-0">
+											<div class="flex items-center gap-2">
+												<span class="text-xs text-error-400">Delete?</span>
+												<button
+													onclick={() => deleteModel(model.name)}
+													disabled={isDeleting}
+													class="px-2 py-1 rounded text-xs font-medium bg-error-500/20 text-error-400
+													hover:bg-error-500/30 border border-error-500/40 transition-colors disabled:opacity-40"
+												>Yes</button>
+												<button
+													onclick={() => pendingDeleteModel = null}
+													class="px-2 py-1 rounded text-xs font-medium border border-surface-300-700
+													text-surface-500-500 hover:bg-surface-100-900 transition-colors"
+												>No</button>
+											</div>
+										</div>
+									{:else}
+										<div class="flex items-center gap-1 shrink-0">
+											<button
+												onclick={() => pendingDeleteModel = model.name}
+												disabled={isDeleting || !!deletingModel || !!loadingModel}
+												title="Remove model from local disk"
+												class="flex flex-col items-center px-2 py-1 rounded-lg border border-surface-300-700
+												text-surface-500-500 hover:border-error-500/40 hover:text-error-400 hover:bg-error-500/5
+												transition-colors disabled:opacity-40"
+											>
+												<span class="text-xs leading-none">{isDeleting ? '…' : '🗑'}</span>
+												<span class="text-[9px] leading-none mt-0.5">delete</span>
+											</button>
+										</div>
+									{/if}
+								</div>
+							{/each}
+						</div>
+					{/if}
 						{#if deleteError}
 							<p class="text-xs text-error-400">❌ {deleteError}</p>
 						{/if}
@@ -1504,7 +1575,7 @@
 						{/if}
 					</div>
 
-					{#if installedModels.length > 0}
+					{#if llmModelNames.length > 0}
 						<div class="space-y-3 pt-3 border-t border-surface-200-800">
 							<div>
 								<p class="text-xs font-semibold text-surface-400-600 uppercase tracking-wide">Load and Test the Model with HouseBot</p>
@@ -1520,7 +1591,7 @@
 									class="flex-1 text-xs rounded-lg px-2 py-1.5 bg-surface-100-900 border border-surface-200-800
 									       text-surface-900-50 focus:outline-none focus:border-primary-500/60"
 								>
-									{#each installedModels as m}
+									{#each llmModelNames as m}
 										<option value={m}>{m}</option>
 									{/each}
 								</select>

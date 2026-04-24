@@ -167,6 +167,36 @@ _warn "No LLM model will be pulled at this stage."
 _warn "After the installer finishes, use the Control Panel to pull a model"
 _warn "(e.g. 'ollama pull mistral-small:22b' or 'ollama pull llama3.1:8b')."
 
+# Pull the embedding model if not already present.
+# nomic-embed-text is small (~270 MB) and required for fast multilingual intent classification.
+_EMBED_MODEL="${OLLAMA_EMBED_MODEL:-nomic-embed-text:latest}"
+echo
+_info "Checking embedding model '${_EMBED_MODEL}'..."
+
+# Ensure Ollama is running so we can query the model list
+if ! curl -s http://localhost:11434/ &>/dev/null; then
+  _info "Starting Ollama temporarily to check for the embedding model..."
+  nohup ollama serve > "$PROJECT_DIR/logs/ollama.log" 2>&1 &
+  for _i in $(seq 1 20); do
+    sleep 1
+    if curl -s http://localhost:11434/ &>/dev/null; then
+      break
+    fi
+  done
+fi
+
+if ollama list 2>/dev/null | grep -q "^${_EMBED_MODEL%%:*}"; then
+  _ok "Embedding model '${_EMBED_MODEL}' already present"
+else
+  _info "Pulling embedding model '${_EMBED_MODEL}' (≈270 MB, one-time download)..."
+  if ollama pull "${_EMBED_MODEL}"; then
+    _ok "Embedding model '${_EMBED_MODEL}' pulled successfully"
+  else
+    _warn "Failed to pull '${_EMBED_MODEL}' — the bot will fall back to LLM-based classification."
+    _warn "You can pull it later with: ollama pull ${_EMBED_MODEL}"
+  fi
+fi
+
 _pause
 
 # ── Step 5: Node.js, bridge dependencies & Control Panel UI build ────────────
