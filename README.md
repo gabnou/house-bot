@@ -40,7 +40,7 @@ Domestic WhatsApp bot for shared management of a shopping list between multiple 
 
 - A Mac running macOS (Homebrew, Python, Node.js and Ollama are installed automatically)
 - A WhatsApp number for the bot — a **dedicated SIM** for multi-partner setups, or your **own number** for personal single-user use
-- A Google account
+- A Google account (only if you want the bot to manage a Google Calendar — this skill is optional)
 
 ---
 
@@ -69,19 +69,26 @@ The installer handles everything automatically (macOS only):
 - Creates a default `.env` from `.env.example`
 - Starts Ollama and all HouseBot services
 
-### 3 — Complete setup in the Installation Wizard
+### 3 — Open the Control Panel and complete configuration
 
-When the installer finishes, open **[http://localhost:8000/install](http://localhost:8000/install)** and follow the step-by-step wizard. There is no need to edit `.env` manually — the wizard covers everything:
+When the installer finishes, the **Control Panel** is available at **[http://localhost:5252](http://localhost:5252)**. This is the browser UI for managing the bot — you will use it for all configuration, monitoring, and day-to-day operations.
+
+Head to **[http://localhost:5252/install](http://localhost:5252/install)** and follow the step-by-step wizard to finish setup. There is no need to edit `.env` manually — the wizard covers everything:
 
 | Step | What it does |
 |---|---|
 | **1. Ollama — AI Models** | Choose and pull a local LLM model; set the keep-alive timeout; test the model through the real HouseBot pipeline and mark it as tested (sets it active) or incompatible |
-| **2. Google OAuth** | Authorize Google Calendar access and store the OAuth token (requires `creds/client_google_api_calendar.json` from Google Cloud Console) |
+| **2. Google OAuth** | Authorize Google Calendar access and store the OAuth token — **only required if you want to use the Calendar skill** (requires `creds/client_google_api_calendar.json` from Google Cloud Console) |
 | **3. WhatsApp Pairing** | Scan the QR code to link the dedicated WhatsApp number; set the linked-device display name (`WHATSAPP_APPNAME`) |
 | **4. Sender Restrictions** | Send a message from each partner's phone, scan for it here, and authorize the JID — saved automatically to `.env` |
 | **5. Location & Briefing** | Search for your city on a map to auto-fill coordinates and timezone; pick the morning briefing language |
 
 All settings are saved directly to `.env` and take effect immediately (a bridge restart is prompted when needed).
+
+> **Skills are optional.** The three built-in skills — Shopping list, Weather, and Google Calendar — work independently of each other. You can use just the ones you need:
+> - **Shopping list** works out of the box with no extra configuration.
+> - **Weather** works out of the box (Open-Meteo is free and requires no API key). Set your default city in Step 5.
+> - **Google Calendar** requires a Google account and OAuth setup (Step 2 of the wizard). Skip it entirely if you don't need calendar management.
 
 ---
 
@@ -99,11 +106,14 @@ Baileys Bridge (Node.js)         ← bridge/index.js           :3001
         ▼
 FastAPI Server (Python)          ← bot/main.py               :8000
    ├── Whisper (transcription)   ← faster-whisper (local)
-   ├── Intent Parser             ← bot/intent_parser.py → Ollama (local LLM)
+   ├── Intent Parser             ← bot/intent_parser.py
+   │       ├── Embeddings        ← Ollama nomic-embed-text (local) — category classification
+   │       ├── LLM               ← Ollama (local) — intent parsing, translation, fallback
+   │       └── User Context      ← bot/user_context.json — injected into every LLM call
    ├── Orchestrator              ← bot/orchestrator.py  → Skills registry
    │       └── Skills            ← bot/skills/  (shopping, weather, calendar)
    │               └── Services  ← bot/services/ (DB, weather API, Google Calendar)
-   ├── Admin API                 ← bot/admin/router.py (services, models, prompts, logs)
+   ├── Admin API                 ← bot/admin/router.py (services, models, prompts, logs, user context)
    └── Scheduler                 ← bot/scheduler.py     → morning briefing
 
 Control Panel (SvelteKit + Skeleton UI)                       :5252
@@ -123,13 +133,22 @@ Incoming message
  pre_route()  ── identity/help regex only (no LLM) ──► action dict
       │ (miss)
       ▼
- language detection + translation (LLM, only if non-English)
+ detect_language()  ──► LLM call + user context (language hint)
+      │  if non-English:
+      ▼
+ translate_to_english()  ──► LLM call + user context (vocabulary hints)
       │
       ▼
- detect_category() / classify_intent_category()  ──► prepend keyword
+ detect_category()  ── keyword/fuzzy match ──► category or None
+      │  (None)
+      ▼
+ classify_intent_category()
+      │   ├─ fast path: embedding cosine similarity
+      │   │       └── nomic-embed-text anchors (pre-computed at startup)
+      │   └─ fallback: LLM classification call
       │
       ▼
- parse_intent()  ── LLM call → JSON {"action": "...", ...} ──► action dict
+ parse_intent()  ── LLM call + user context → JSON {"action": "...", ...} ──► action dict
       │
       ▼
  orchestrator.py
@@ -141,11 +160,15 @@ Incoming message
  services/weather.py  →  get_weather_forecast(...)  →  string reply
       │
       ▼
- translate reply back (LLM, only if non-English)
+ translate_from_english()  ──► LLM call + user context (only if non-English)
       │
       ▼
   {"reply": "...", "notification": "..."}
 ```
+
+**User context** is a household-specific behavioural profile (preferred language + custom instructions) stored in `bot/user_context.json` and managed via the Prompting page in the Control Panel. When active, it is injected into every LLM call — language detection, translation, and intent parsing — so the model respects household vocabulary, preferred output style, and any domain-specific quirks without changing the prompts in the code.
+
+**Embedding-based classification** uses a local `nomic-embed-text` model (via Ollama) to compute cosine similarity between the incoming message and pre-computed anchor vectors for each skill category. The anchor mean vectors are computed at startup in a background thread and cached in memory. This fast path avoids a full LLM call for category detection in most cases; the LLM classifier only runs as a fallback when embedding confidence is below the threshold (0.50 cosine similarity).
 
 ### Why the skills layer matters
 
@@ -295,51 +318,52 @@ cd ui && npm run dev
 
 ---
 
-## WhatsApp Commands
+## Commands
 
 Send messages directly to the bot's number in a private chat.
 
-**Language** — the bot is built in English but understands and replies in any language. When a message is not recognised as English, it is automatically translated to English, processed, and the reply is translated back to the detected language. This works for both text and voice messages.
+**Language** — the bot is built in English but understands and replies in any language. Every incoming message is first checked against the language detection pipeline. If a non-English message is detected with sufficient confidence, it is automatically translated to English, processed through the normal command pipeline, and the reply is translated back into the original language. This works for both text and voice messages — including the `help` and identity commands below.
 
-**Custom prompts** — the command examples below reflect the default built-in behaviour. You can extend or tune intent recognition per skill (shopping, weather, calendar) directly in the Control Panel at **http://localhost:8000** → Prompting, without restarting the bot.
+**Voice messages** — voice notes (PTT) are automatically transcribed in any language using a local speech-to-text model. If the transcription is not understandable, the bot asks you to repeat.
 
-**Category keywords** — commands start with `shopping`, `weather` or `calendar` to disambiguate the intent.
+**User context** — you can fine-tune how the bot interprets your household's messages (vocabulary quirks, preferred tone, domain-specific terms) in the Control Panel at **http://localhost:5252** → Prompting. Changes take effect on the next message without a restart.
 
-**Automatic pre-routing** — without a category keyword, the bot assumes you want to mainly interact with the **shopping list** and directly recognizes the most common patterns without going through the LLM:
+**How intent is recognised** — the bot uses a two-step process to identify what you mean:
 
-| Message (examples) | Action |
+1. **Category hint (fast)** — if your message starts with `shopping`, `weather`, or `calendar` the bot uses that as a direct hint and skips classification entirely, going straight to intent parsing.
+2. **Automatic classification (no prefix needed)** — if there is no keyword, the bot computes an embedding of your message and compares it to pre-trained anchor vectors for each skill (cosine similarity). In the rare case that confidence is too low, it falls back to a single LLM classification call. Either way, the bot figures out which skill you mean — you do not need to prefix your messages.
+
+The only two commands that bypass this pipeline entirely (no LLM, no embedding) are:
+
+| Message | Action |
 |---|---|
-| `show`, `list`, `shopping list`, `what's missing?` | show the shopping list |
-| `add yogurt`, `add bread and milk` | add items to the shopping list |
-| `bought milk`, `I bought bread` | mark as bought |
-| `remove bread`, `delete eggs` | remove from shopping list |
-| `calendar`, `agenda`, `appointments`, `what do I have today?` | show today's events |
+| `help`, `what can you do`, `commands` | show the list of available commands |
+| `who are you`, `what's your name` | bot introduces itself |
 
-**Voice messages** — voice notes (PTT) are automatically transcribed in any language. If the transcription is not understandable, the bot asks you to repeat.
+These work in any language — the message is translated to English first if needed, then matched.
 
 ### Shopping List
 
 ```text
-shopping add milk and eggs
-shopping add ibuprofen
-shopping what's missing?
+add milk and eggs
+add ibuprofen
+what's missing?
+what's missing for food?
+I bought apples
+bought milk
+remove pasta
+clear the list
+--
+shopping add milk and eggs        ← explicit keyword: skips classification
 shopping what's missing for food?
 shopping bought apples
 shopping remove pasta
 shopping clear
---
-add yogurt                    ← no prefix: shopping pre-routing
-add bread and milk            ← no prefix: shopping pre-routing
-show                          ← no prefix: show list
-shopping list                 ← no prefix: show list
-bought milk                   ← no prefix: shopping pre-routing
-remove bread                  ← no prefix: shopping pre-routing
 ```
 
 ### Weather
 
 ```text
-weather
 weather now
 weather now in Milan
 weather tomorrow
@@ -347,34 +371,31 @@ weather next weekend
 weather next 4 days
 weather next 3 days in Madrid
 weather next 6 hours in Lecce
+--
+weather                           ← explicit keyword: skips classification
+forecast next 4 days              ← no prefix: classified automatically
+forecast London
 ```
 
-### Family Calendar
+### Calendar
 
 ```text
-calendar today
-calendar tomorrow
-calendar day after tomorrow
-calendar this week
-calendar next week
-calendar next two weeks
-calendar next three weeks
-calendar next 3 days
-calendar April 9th
-calendar show events for April 9th
-calendar April
-calendar April events
-calendar May appointments
-calendar from the 5th to the 20th of April
-calendar details dinner with Mario
+what do I have today?
+tomorrow
+this week
+next week
+next two weeks
+events in April
+events from the 5th to the 20th of April
+details dinner with Mario
+add dinner with Mario Friday March 28th at 9pm
+add doctor visit on April 5th at 10am in Barcelona
+delete dinner with Mario
+move doctor visit to April 6th at 11am
+move Rossella appointment from April 2nd to April 9th
+--
+calendar today                    ← explicit keyword: skips classification
 calendar add dinner with Mario Friday March 28th at 9pm
-calendar add doctor visit on April 5th at 10am in Barcelona
 calendar delete dinner with Mario
 calendar move doctor visit to April 6th at 11am
-calendar move Rossella appointment from April 2nd to April 9th
---
-calendar                      ← no prefix: show today's events
-agenda                        ← no prefix: show today's events
-what do I have today?         ← no prefix: show today's events
-
 ```
