@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 # Actions that map to shopping tools for now
 SHOPPING_ACTIONS = {"add", "remove", "bought", "show", "clear"}
 
-_SKILLS_CONFIG_FILE = Path(__file__).parent / "skills_config.json"
+_SKILLS_CONFIG_FILE = Path(__file__).parent / "skills" / "skills_config.json"
 
 _SKILL_DISPLAY_NAMES = {
     "calendar": "Google Calendar",

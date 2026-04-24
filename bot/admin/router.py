@@ -106,7 +106,7 @@ async def ping():
 
 # ── Skills config ─────────────────────────────────────────────────────────────
 
-_SKILLS_CONFIG_FILE = _PROJECT_ROOT / "bot" / "skills_config.json"
+_SKILLS_CONFIG_FILE = _PROJECT_ROOT / "bot" / "skills" / "skills_config.json"
 
 _SKILL_META = {
     "calendar": {
