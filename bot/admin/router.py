@@ -1733,6 +1733,8 @@ async def scan_sender_restrictions():
     seen: dict[str, dict] = {}
 
     def _add(jid: str, name: str) -> None:
+        if jid.endswith("@g.us"):
+            return  # group JIDs are never used for sender filtering
         if jid not in seen:
             seen[jid] = {
                 "jid": jid,

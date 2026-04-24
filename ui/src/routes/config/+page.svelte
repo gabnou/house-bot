@@ -2249,10 +2249,19 @@
 						{:else}
 							<div class="space-y-2">
 								<p class="text-xs font-semibold text-surface-400-600 uppercase tracking-wide">Detected senders</p>
+								<p class="text-[10px] text-surface-400-600">
+									Authorize the <span class="font-mono text-primary-400">@lid</span> entry — that is the Linked Device ID used by multi-device WhatsApp for direct messages.
+								</p>
 								{#each scannedSenders as sender}
 									<div class="flex items-center gap-3 p-3 rounded-lg border border-surface-200-800 bg-surface-100-900/40">
 										<div class="flex-1 min-w-0">
-											<p class="text-xs font-semibold">{sender.name || '(no display name)'}</p>
+											<div class="flex items-center gap-2">
+												<p class="text-xs font-semibold">{sender.name || '(no display name)'}</p>
+												<span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-medium
+													{sender.type === 'lid' ? 'bg-primary-500/15 text-primary-400' : 'bg-surface-300-700/40 text-surface-400-600'}">
+													@{sender.type}
+												</span>
+											</div>
 											<p class="text-[10px] text-surface-400-600 font-mono">{sender.jid}</p>
 										</div>
 										{#if sender.already_authorized}
