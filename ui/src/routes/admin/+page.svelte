@@ -53,24 +53,6 @@
 		}
 	}
 
-	// ── Google Account state ──────────────────────────────────────────────
-	type GoogleStatus = 'unknown' | 'valid' | 'missing' | 'expired' | 'invalid';
-	let googleStatus = $state<GoogleStatus>('unknown');
-	let googleExpiry = $state<string | null>(null);
-	let googleConfiguredCalendar = $state('');
-
-	async function loadGoogleStatus() {
-		try {
-			const res = await fetch('/admin/api/google-auth/status');
-			if (res.ok) {
-				const data = await res.json();
-				googleStatus = data.status ?? 'unknown';
-				googleExpiry = data.expiry ?? null;
-				googleConfiguredCalendar = data.configured_calendar ?? '';
-			}
-		} catch { /* non-fatal */ }
-	}
-
 	// ── Ollama AI Engine state ─────────────────────────────────────────────
 	let ollamaUp = $state<boolean | null>(null);
 	let ollamaActiveModel = $state<string | null>(null);
@@ -257,7 +239,7 @@
 		}
 	}
 
-	onMount(() => { loadGoogleStatus(); loadOllamaStatus(); checkOllamaUpdate(); checkHousebotUpdate(); });
+	onMount(() => { loadOllamaStatus(); checkOllamaUpdate(); checkHousebotUpdate(); });
 </script>
 
 <div class="space-y-6">
@@ -491,50 +473,6 @@
 					</div>
 				{/if}
 			</div>
-		</div>
-	</div>
-
-	<!-- ── Google Calendar ──────────────────────────────────────── -->
-	<div class="card bg-surface-50-950 border border-surface-200-800 rounded-xl overflow-hidden">
-		<div class="px-5 py-3.5 border-b border-surface-200-800 flex items-center gap-2">
-			<span>🔑</span>
-			<h3 class="font-semibold text-sm">Google Calendar</h3>
-			<button
-				onclick={loadGoogleStatus}
-				class="ml-auto text-xs px-2 py-1 rounded bg-surface-100-900 hover:bg-surface-200-800
-				text-surface-500-500 transition-colors"
-			>↻ Refresh</button>
-		</div>
-		<div class="p-5 space-y-3">
-			<!-- Token status row -->
-			<div class="flex items-center gap-3 px-4 py-3 rounded-xl border
-				{googleStatus === 'valid'   ? 'border-success-500/40 bg-success-500/5' :
-				 googleStatus === 'expired' ? 'border-warning-500/40 bg-warning-500/5' :
-				                             'border-surface-200-800 bg-surface-100-900/50'}">
-				<div class="w-2.5 h-2.5 rounded-full shrink-0
-					{googleStatus === 'valid'   ? 'bg-success-500' :
-					 googleStatus === 'expired' ? 'bg-warning-400' :
-					 googleStatus === 'missing' ? 'bg-error-400'   : 'bg-surface-400-600'}"></div>
-				<div class="flex-1">
-					<p class="text-xs font-semibold capitalize">
-						Token: {googleStatus === 'unknown' ? 'checking…' : googleStatus}
-					</p>
-					{#if googleExpiry}
-						<p class="text-[10px] text-surface-400-600 mt-0.5">Expiry: {googleExpiry}</p>
-					{/if}
-				</div>
-			</div>
-			<!-- Configured calendar name -->
-			{#if googleConfiguredCalendar}
-				<div class="flex items-center gap-2 px-4 py-2 rounded-lg border border-surface-200-800 bg-surface-100-900/50">
-					<span class="text-sm">📅</span>
-					<p class="text-xs text-surface-400-600">Calendar: <span class="font-medium text-surface-900-50">{googleConfiguredCalendar}</span></p>
-				</div>
-			{/if}
-			<p class="text-xs text-surface-400-600">
-				To change account or calendar, use the
-				<a href="/config" class="text-primary-400 hover:underline">Configuration page</a>.
-			</p>
 		</div>
 	</div>
 

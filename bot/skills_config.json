@@ -1,0 +1,11 @@
+{
+  "calendar": true,
+  "shopping": true,
+  "weather": true,
+  "shopping_custom_categories": [
+    {
+      "name": "pet supplies",
+      "hint": "pet food, toys, blankets, nail clippers"
+    }
+  ]
+}

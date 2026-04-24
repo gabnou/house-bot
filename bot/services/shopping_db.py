@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 DB_PATH = Path(__file__).parent / "db" / "shoppinglist.db"
 SCHEMA_PATH = Path(__file__).parent / "db" / "shoppinglist_schema.sql"
 
-VALID_CATEGORIES = {'food', 'other', 'clothing', 'health'}
+BUILTIN_CATEGORIES = {'food', 'other', 'clothing', 'health'}
 
 CATEGORY_EMOJI = {
     'food': '🍎',
@@ -17,23 +17,67 @@ CATEGORY_EMOJI = {
 }
 
 
+def get_known_categories() -> list:
+    """Return all distinct categories from pending items, always including built-ins."""
+    try:
+        with get_conn() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT category FROM items WHERE status = 'pending' ORDER BY category"
+            ).fetchall()
+        db_cats = {r["category"] for r in rows}
+    except Exception:
+        db_cats = set()
+    return sorted(BUILTIN_CATEGORIES | db_cats)
+
+
 def get_conn():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
 
+def _migrate_db():
+    """Drop the hardcoded category CHECK constraint if it still exists in the live DB.
+
+    SQLite cannot ALTER a constraint, so we recreate the table when needed.
+    This runs once at startup and is a no-op if the constraint is already gone.
+    """
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='items'"
+        ).fetchone()
+        if row and "CHECK" in (row["sql"] or "").upper():
+            logger.info("Migrating DB: removing category CHECK constraint …")
+            conn.executescript("""
+                PRAGMA foreign_keys = OFF;
+                BEGIN;
+                CREATE TABLE IF NOT EXISTS items_new (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name        TEXT NOT NULL,
+                    category    TEXT NOT NULL,
+                    status      TEXT NOT NULL DEFAULT 'pending'
+                                     CHECK(status IN ('pending', 'bought')),
+                    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                INSERT INTO items_new SELECT id, name, category, status, created_at, updated_at FROM items;
+                DROP TABLE items;
+                ALTER TABLE items_new RENAME TO items;
+                COMMIT;
+                PRAGMA foreign_keys = ON;
+            """)
+            logger.info("✅ DB migration complete.")
+
+
 def init_db():
     with get_conn() as conn:
         conn.executescript(SCHEMA_PATH.read_text())
+    _migrate_db()
     logger.info("✅ Database initialized.")
 
 
 def add_item(name: str, category: str) -> str:
     category = category.lower()
-    if category not in VALID_CATEGORIES:
-        return f"❌ Invalid category: '{category}'. Use: {', '.join(sorted(VALID_CATEGORIES))}."
-
     with get_conn() as conn:
         existing = conn.execute(
             "SELECT id FROM items WHERE name = ? AND status = 'pending'",
@@ -53,8 +97,6 @@ def add_item(name: str, category: str) -> str:
 def add_and_mark_bought(name: str, category: str = "other") -> str:
     """Add an item directly as 'bought' (for items bought but not on the list)."""
     category = category.lower()
-    if category not in VALID_CATEGORIES:
-        category = "other"
     with get_conn() as conn:
         cur = conn.execute(
             """UPDATE items SET status = 'bought', updated_at = CURRENT_TIMESTAMP
@@ -164,3 +206,31 @@ def get_pending_items() -> list:
             "SELECT name FROM items WHERE status = 'pending' ORDER BY LENGTH(name) DESC"
         ).fetchall()
     return [r["name"] for r in rows]
+
+
+def get_pending_items_by_category(category: str) -> list:
+    """Return [{id, name}] for all pending items in a given category."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, name FROM items WHERE status = 'pending' AND category = ?",
+            (category.lower(),)
+        ).fetchall()
+    return [{"id": r["id"], "name": r["name"]} for r in rows]
+
+
+def get_all_pending_items_with_category() -> list:
+    """Return [{id, name, category}] for all pending items."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, name, category FROM items WHERE status = 'pending' ORDER BY category, name"
+        ).fetchall()
+    return [{"id": r["id"], "name": r["name"], "category": r["category"]} for r in rows]
+
+
+def update_item_category(item_id: int, new_category: str) -> None:
+    """Update the category of a single item."""
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE items SET category = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (new_category.lower(), item_id)
+        )

@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 import asyncio
 import inspect
 import logging
@@ -10,6 +11,26 @@ logger = logging.getLogger(__name__)
 
 # Actions that map to shopping tools for now
 SHOPPING_ACTIONS = {"add", "remove", "bought", "show", "clear"}
+
+_SKILLS_CONFIG_FILE = Path(__file__).parent / "skills_config.json"
+
+_SKILL_DISPLAY_NAMES = {
+    "calendar": "Google Calendar",
+    "shopping": "Shopping List",
+    "weather": "Weather Forecast",
+}
+
+
+def _is_skill_enabled(skill: str) -> bool:
+    """Read skills_config.json and return whether the given skill is enabled.
+
+    Defaults to True (enabled) if the file is missing or the key is absent.
+    """
+    try:
+        cfg = json.loads(_SKILLS_CONFIG_FILE.read_text(encoding="utf-8"))
+        return bool(cfg.get(skill, True))
+    except Exception:
+        return True
 
 
 def action_to_tool(action: str) -> Optional[str]:
@@ -69,6 +90,16 @@ async def handle_intent(intent: Dict[str, Any], text: str, sender: str) -> Optio
     if not tool_name:
         logger.debug("Orchestrator: no mapping for action '%s'", action)
         return None
+
+    # Gate on skill enabled state
+    skill_prefix = tool_name.split(".")[0]
+    if not _is_skill_enabled(skill_prefix):
+        display = _SKILL_DISPLAY_NAMES.get(skill_prefix, skill_prefix.title())
+        logger.info("Orchestrator: skill '%s' is disabled — rejecting action '%s'", skill_prefix, action)
+        return {
+            "reply": f"The {display} skill is currently disabled. You can enable it in the Skills page of the Control Panel.",
+            "notification": None,
+        }
 
     tool = registry_get(tool_name)
     if not tool:

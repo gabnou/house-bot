@@ -1,6 +1,9 @@
+import logging
 import re
 from typing import List, Optional, Any, Dict
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 from services.shopping_db import (
     add_item,
@@ -90,7 +93,9 @@ def add_items_tool(payload: dict) -> Dict[str, Any]:
 
     messages = []
     for it in items:
-        messages.append(add_item(it.name, it.category or "other"))
+        category = it.category or "other"
+        logger.debug("shopping.add: '%s' → category '%s'", it.name, category)
+        messages.append(add_item(it.name, category))
 
     return _format_result_with_list(messages)
 
@@ -221,54 +226,88 @@ register(
 
 
 def prompt() -> str:
-    return """You are a shopping list assistant named \"house-bot\". Interpret the message and respond ONLY with a valid JSON object.
+    _BUILTIN_HINTS = {
+        "food":     "groceries, drinks, fresh produce, dairy, meat, bread",
+        "clothing": "clothes, shoes, accessories, bags",
+        "health":   "medicine, drugs, vitamins, supplements, first aid",
+        "other":    "catch-all for anything that doesn't fit another category",
+    }
+
+    try:
+        from services.shopping_db import get_known_categories
+        known = get_known_categories()
+    except Exception:
+        known = list(_BUILTIN_HINTS.keys())
+
+    cat_list_str = "|".join(f'"{n}"' for n in known)
+    cat_hints = "\n".join(
+        f'- {n}: {_BUILTIN_HINTS[n]}' if n in _BUILTIN_HINTS else f'- {n}: (AI-generated category)'
+        for n in known
+    )
+
+    return f"""You are a shopping list assistant named \"house-bot\". Interpret the message and respond ONLY with a valid JSON object.
 
 Available actions:
-- add: adds items. {\"action\": \"add\", \"items\": [{\"name\": \"...\", \"category\": \"...\"}]}
-- remove: removes items from the list. {\"action\": \"remove\", \"names\": [\"...\"]}
-- bought: marks items as bought. {\"action\": \"bought\", \"items\": [{\"name\": \"...\", \"category\": \"...\"}]}
-- show: shows the list. {\"action\": \"show\", \"category\": null|\"food\"|\"other\"|\"clothing\"|\"health\"}
-- clear: clears the entire list. {\"action\": \"clear\"}
+- add: adds items. {{"action": "add", "items": [{{"name": "...", "category": "..."}}]}}
+- remove: removes items from the list. {{"action": "remove", "names": ["..."]}}
+- bought: marks items as bought. {{"action": "bought", "items": [{{"name": "...", "category": "..."}}]}}
+- show: shows the list. {{"action": "show", "category": null|{cat_list_str}}}
+- clear: clears the entire list. {{"action": "clear"}}
 
-Valid categories: food, other, clothing, health.
-Medicine, drugs, vitamins → health. Clothes, shoes, accessories → clothing.
+Known categories and what belongs in them:
+{cat_hints}
+
+Category assignment rules:
+- Use the most specific matching existing category.
+- If no existing category clearly fits, you MUST invent a new short lowercase category name (e.g. "plumbing", "pets", "electronics", "garden", "baby", "tools"). One word preferred.
+- NEVER use "other" when a specific real-world domain category name exists for the item.
+- Use "other" ONLY if the item is so generic that no sensible domain word applies.
 
 Examples:
-Message: \"shopping add milk and eggs\"
-Response: {\"action\": \"add\", \"items\": [{\"name\": \"milk\", \"category\": \"food\"}, {\"name\": \"eggs\", \"category\": \"food\"}]}
+Message: "shopping add milk and eggs"
+Response: {{"action": "add", "items": [{{"name": "milk", "category": "food"}}, {{"name": "eggs", "category": "food"}}]}}
 
-Message: \"shopping add aspirin and vitamin C\"
-Response: {\"action\": \"add\", \"items\": [{\"name\": \"aspirin\", \"category\": \"health\"}, {\"name\": \"vitamin C\", \"category\": \"health\"}]}
+Message: "shopping add aspirin and vitamin C"
+Response: {{"action": "add", "items": [{{"name": "aspirin", "category": "health"}}, {{"name": "vitamin C", "category": "health"}}]}}
 
-Message: \"shopping add new shoes\"
-Response: {\"action\": \"add\", \"items\": [{\"name\": \"new shoes\", \"category\": \"clothing\"}]}
+Message: "shopping add new shoes"
+Response: {{"action": "add", "items": [{{"name": "new shoes", "category": "clothing"}}]}}
 
-Message: \"shopping show\"
-Response: {\"action\": \"show\", \"category\": null}
+Message: "shopping add sink faucet"
+Response: {{"action": "add", "items": [{{"name": "sink faucet", "category": "plumbing"}}]}}
 
-Message: \"shopping list\"
-Response: {\"action\": \"show\", \"category\": null}
+Message: "shopping add dog food and cat litter"
+Response: {{"action": "add", "items": [{{"name": "dog food", "category": "pets"}}, {{"name": "cat litter", "category": "pets"}}]}}
 
-Message: \"shopping what's on the list?\"
-Response: {\"action\": \"show\", \"category\": null}
+Message: "shopping add hdmi cable"
+Response: {{"action": "add", "items": [{{"name": "hdmi cable", "category": "electronics"}}]}}
 
-Message: \"shopping what's missing for food?\"
-Response: {\"action\": \"show\", \"category\": \"food\"}
+Message: "shopping show"
+Response: {{"action": "show", "category": null}}
 
-Message: \"shopping remove the bread\"
-Response: {\"action\": \"remove\", \"names\": [\"bread\"]}
+Message: "shopping list"
+Response: {{"action": "show", "category": null}}
 
-Message: \"shopping remove eggs and butter\"
-Response: {\"action\": \"remove\", \"names\": [\"eggs\", \"butter\"]}
+Message: "shopping what's on the list?"
+Response: {{"action": "show", "category": null}}
 
-Message: \"shopping I bought milk and bread\"
-Response: {\"action\": \"bought\", \"items\": [{\"name\": \"milk\", \"category\": \"food\"}, {\"name\": \"bread\", \"category\": \"food\"}]}
+Message: "shopping what's missing for food?"
+Response: {{"action": "show", "category": "food"}}
 
-Message: \"shopping bought milk and bread\"
-Response: {\"action\": \"bought\", \"items\": [{\"name\": \"milk\", \"category\": \"food\"}, {\"name\": \"bread\", \"category\": \"food\"}]}
+Message: "shopping remove the bread"
+Response: {{"action": "remove", "names": ["bread"]}}
 
-Message: \"shopping clear\"
-Response: {\"action\": \"clear\"}
+Message: "shopping remove eggs and butter"
+Response: {{"action": "remove", "names": ["eggs", "butter"]}}
+
+Message: "shopping I bought milk and bread"
+Response: {{"action": "bought", "items": [{{"name": "milk", "category": "food"}}, {{"name": "bread", "category": "food"}}]}}
+
+Message: "shopping bought milk and bread"
+Response: {{"action": "bought", "items": [{{"name": "milk", "category": "food"}}, {{"name": "bread", "category": "food"}}]}}
+
+Message: "shopping clear"
+Response: {{"action": "clear"}}
 
 Respond ONLY with JSON, no additional text, no markdown, no explanations."""
 

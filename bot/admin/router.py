@@ -104,6 +104,193 @@ async def ping():
     return {"ok": True, "service": "housebot-admin"}
 
 
+# ── Skills config ─────────────────────────────────────────────────────────────
+
+_SKILLS_CONFIG_FILE = _PROJECT_ROOT / "bot" / "skills_config.json"
+
+_SKILL_META = {
+    "calendar": {
+        "name": "Google Calendar",
+        "description": "View, add, edit and delete events on your Google Calendar via natural language.",
+        "icon": "📅",
+    },
+    "shopping": {
+        "name": "Shopping List",
+        "description": "Manage a shared shopping list — add items, mark them as bought, and clear the list.",
+        "icon": "🛒",
+    },
+    "weather": {
+        "name": "Weather Forecast",
+        "description": "Get current conditions, hourly breakdowns and multi-day forecasts for any city.",
+        "icon": "⛅",
+    },
+}
+
+
+def _load_skills_config() -> dict:
+    try:
+        return json.loads(_SKILLS_CONFIG_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {k: True for k in _SKILL_META}
+
+
+def _save_skills_config(cfg: dict) -> None:
+    _SKILLS_CONFIG_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+
+
+@router.get("/skills")
+async def get_skills():
+    """Return enabled/disabled state for all skills."""
+    cfg = _load_skills_config()
+    result = {}
+    for key, meta in _SKILL_META.items():
+        result[key] = {**meta, "enabled": bool(cfg.get(key, True))}
+    return {"skills": result}
+
+
+class SkillUpdate(BaseModel):
+    enabled: bool
+
+
+@router.put("/skills/{skill}")
+async def update_skill(skill: str, body: SkillUpdate):
+    """Enable or disable a skill."""
+    if skill not in _SKILL_META:
+        raise HTTPException(status_code=404, detail=f"Unknown skill: {skill}")
+    cfg = _load_skills_config()
+    cfg[skill] = body.enabled
+    _save_skills_config(cfg)
+    return {"ok": True, "skill": skill, "enabled": body.enabled}
+
+
+# ── Shopping categories ───────────────────────────────────────────────────────
+
+_BUILTIN_CATEGORIES = [
+    {"name": "food",     "hint": "groceries, drinks, fresh produce, dairy, meat, bread", "builtin": True},
+    {"name": "clothing", "hint": "clothes, shoes, accessories, bags", "builtin": True},
+    {"name": "health",   "hint": "medicine, drugs, vitamins, supplements, first aid", "builtin": True},
+    {"name": "other",    "hint": "default catch-all for anything not in another category", "builtin": True},
+]
+
+
+def _parse_llm_json(raw: str) -> dict:
+    """Extract first JSON object from an LLM response string."""
+    raw = raw.strip()
+    # strip surrounding double-braces if present
+    raw = re.sub(r'^\{\{', '{', raw)
+    raw = re.sub(r'\}\}$', '}', raw)
+    m = re.search(r'\{.*\}', raw, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group())
+        except Exception:
+            pass
+    return {}
+
+
+def _llm_reassign_deleted_category(items: list, categories: list) -> dict:
+    """Ask the LLM to assign each item (from a deleted category) to the best remaining category.
+
+    items      — [{id, name}]
+    categories — [{name, hint}]
+    Returns    — {item_id: category_name}
+    """
+    if not items or not categories:
+        return {}
+
+    import requests as _req
+    ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
+    model = os.getenv("OLLAMA_MODEL", "mistral-small:22b")
+
+    # Try to import the live in-memory model name
+    try:
+        import intent_parser as _ip
+        model = _ip.MODEL
+    except Exception:
+        pass
+
+    cat_hints = "\n".join(f'- {c["name"]}: {c["hint"]}' for c in categories)
+    items_list = "\n".join(f'{it["id"]} | {it["name"]}' for it in items)
+
+    prompt = (
+        "You manage a shopping list. A category was removed and its items must be re-categorized.\n"
+        "Assign each item to the most appropriate remaining category.\n\n"
+        f"Available categories:\n{cat_hints}\n\n"
+        f"Items to re-categorize (format: id | name):\n{items_list}\n\n"
+        'Respond ONLY with valid JSON: {"assignments": [{"id": N, "category": "category_name"}, ...]}'
+    )
+    try:
+        resp = _req.post(ollama_url, json={
+            "model": model, "prompt": prompt, "stream": False,
+            "options": {"temperature": 0, "num_predict": 256},
+        }, timeout=30)
+        data = _parse_llm_json(resp.json().get("response", ""))
+        result = {}
+        for entry in data.get("assignments", []):
+            item_id = entry.get("id")
+            cat = entry.get("category", "").lower().strip()
+            valid_names = {c["name"] for c in categories}
+            if item_id is not None and cat in valid_names:
+                result[int(item_id)] = cat
+        return result
+    except Exception as exc:
+        logger.warning("LLM reassign failed: %s", exc)
+        return {}
+
+
+
+@router.get("/skills/shopping/categories")
+async def get_shopping_categories():
+    """Return built-in categories and any dynamic categories auto-created by the bot."""
+    from services.shopping_db import get_known_categories
+    builtin_names = {c["name"] for c in _BUILTIN_CATEGORIES}
+    db_cats = get_known_categories()
+    dynamic = [{"name": c} for c in db_cats if c not in builtin_names]
+    return {"builtin": _BUILTIN_CATEGORIES, "dynamic": dynamic}
+
+
+@router.delete("/skills/shopping/categories/{name}")
+async def delete_shopping_category(name: str):
+    """Delete a dynamic shopping category, re-assigning its pending items to the best remaining category."""
+    from services.shopping_db import (
+        get_pending_items_by_category, update_item_category,
+        get_known_categories, BUILTIN_CATEGORIES as _DB_BUILTINS,
+    )
+
+    name = name.strip().lower()
+    if any(c["name"] == name for c in _BUILTIN_CATEGORIES):
+        raise HTTPException(status_code=403, detail=f"Built-in category '{name}' cannot be deleted.")
+    known = get_known_categories()
+    if name not in known:
+        raise HTTPException(status_code=404, detail=f"Category '{name}' not found.")
+
+    moved = 0
+    try:
+        orphaned = get_pending_items_by_category(name)
+        if orphaned:
+            remaining_builtin = [{"name": c["name"], "hint": c["hint"]} for c in _BUILTIN_CATEGORIES]
+            remaining_dynamic = [{"name": c, "hint": c} for c in known if c not in _DB_BUILTINS and c != name]
+            remaining = remaining_builtin + remaining_dynamic
+            assignments = _llm_reassign_deleted_category(orphaned, remaining)
+            valid_ids = {it["id"] for it in orphaned}
+            for item_id, new_cat in assignments.items():
+                if item_id in valid_ids:
+                    update_item_category(item_id, new_cat)
+                    moved += 1
+            assigned_ids = set(assignments.keys())
+            for it in orphaned:
+                if it["id"] not in assigned_ids:
+                    update_item_category(it["id"], "other")
+                    moved += 1
+    except Exception as exc:
+        logger.warning("Re-categorization after delete failed: %s", exc)
+
+    updated_known = get_known_categories()
+    builtin_names = {c["name"] for c in _BUILTIN_CATEGORIES}
+    dynamic = [{"name": c} for c in updated_known if c not in builtin_names]
+    return {"ok": True, "dynamic": dynamic, "items_moved": moved}
+
+
 @router.get("/git-info")
 async def git_info():
     """Return last commit hash, date, branch, and GitHub link."""

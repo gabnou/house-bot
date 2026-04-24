@@ -49,10 +49,11 @@
 	<!-- Quick links grid -->
 	<div class="grid grid-cols-2 sm:grid-cols-3 gap-4">
 		{#each [
-			{ href: '/config', icon: '⚙️',  label: 'Configuration', desc: 'Configure your housebot' },
-			{ href: '/admin',   icon: '🔧', label: 'Admin',          desc: 'Manage your housebot services' },
-			{ href: '/status',  icon: '⚡', label: 'Status',         desc: 'Live health + logs' },
-			{ href: '/prompts', icon: '✏️',  label: 'Prompting',      desc: 'Customize your housebot behaviours' },
+			{ href: '/config',  icon: '⚙️',  label: 'Configuration',   desc: 'Configure your housebot' },
+			{ href: '/skills',  icon: '🧩', label: 'Skills',           desc: 'Enable or disable bot capabilities' },
+			{ href: '/admin',   icon: '🔧', label: 'Admin',             desc: 'Manage your housebot services' },
+			{ href: '/status',  icon: '⚡', label: 'Status',            desc: 'Live health + logs' },
+			{ href: '/prompts', icon: '✏️',  label: 'Prompting',         desc: 'Customize your housebot behaviours' },
 		] as link}
 			<a
 				href={link.href}
