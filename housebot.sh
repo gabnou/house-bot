@@ -52,6 +52,7 @@ except:
         ollama stop "$MODEL_IN_MEMORY" 2>/dev/null
         sleep 2
         ollama run "$MODEL_CONFIGURED" "" > /dev/null 2>&1 &
+        disown
         sleep 10
         pkill -f "ollama run" 2>/dev/null
         echo "✅ Model updated to $MODEL_CONFIGURED"
