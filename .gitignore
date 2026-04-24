@@ -9,6 +9,8 @@ bot/services/db/shoppinglist.db
 logs/
 release.json
 .venv/
+.continue/
+bot/user_context.json
 venv/
 __pycache__/
 *.pyc
