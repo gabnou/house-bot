@@ -30,12 +30,22 @@ except:
     pass
 " 2>/dev/null)
 
+    # Read the configured embedding model from .env (may differ from the LLM model)
+    EMBED_CONFIGURED=$(grep '^OLLAMA_EMBED_MODEL' "$PROJECT_DIR/.env" | head -1 | sed 's/.*=\s*//' | tr -d '"'"'" | tr -d '\r' | xargs)
+    EMBED_CONFIGURED=${EMBED_CONFIGURED:-nomic-embed-text:latest}
+
     if [ -z "$MODEL_IN_MEMORY" ]; then
         echo "ℹ️ No model loaded in memory — will be loaded on first message."
         return
     fi
 
     echo "📦 Model in memory: $MODEL_IN_MEMORY"
+
+    # If the model in memory is the embedding model, it was warm from anchor preloading — leave it alone.
+    if [ "$MODEL_IN_MEMORY" = "$EMBED_CONFIGURED" ]; then
+        echo "✅ Embedding model in memory ($MODEL_IN_MEMORY) — LLM will load on first message."
+        return
+    fi
 
     if [ "$MODEL_IN_MEMORY" != "$MODEL_CONFIGURED" ]; then
         echo "⚠️ Different model — unloading $MODEL_IN_MEMORY and loading $MODEL_CONFIGURED..."
