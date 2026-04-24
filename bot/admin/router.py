@@ -1369,6 +1369,117 @@ async def reset_prompt(skill: str):
     return JSONResponse(content={"ok": True, "skill": skill, "is_override": False, "note": "already default"})
 
 
+# ── User Context ─────────────────────────────────────────────────────────────
+
+_USER_CONTEXT_FILE = _PROJECT_ROOT / "bot" / "user_context.json"
+
+SUPPORTED_LANGUAGES = [
+    "Arabic", "Chinese", "Czech", "Danish", "Dutch", "English", "Finnish",
+    "French", "German", "Greek", "Hebrew", "Hindi", "Hungarian", "Indonesian",
+    "Italian", "Japanese", "Korean", "Norwegian", "Polish", "Portuguese",
+    "Romanian", "Russian", "Spanish", "Swedish", "Thai", "Turkish",
+    "Ukrainian", "Vietnamese",
+]
+
+
+class UserContextRequest(BaseModel):
+    language: str
+    instructions: str
+
+
+@router.get("/user-context")
+async def get_user_context():
+    """Return the current user context (language preference + behavioural instructions)."""
+    if not _USER_CONTEXT_FILE.exists():
+        return JSONResponse(content={
+            "language": "",
+            "instructions": "",
+            "supported_languages": SUPPORTED_LANGUAGES,
+        })
+    try:
+        data = json.loads(_USER_CONTEXT_FILE.read_text(encoding="utf-8"))
+        return JSONResponse(content={
+            "language": data.get("language", ""),
+            # Return the original (native-language) text to the UI for display
+            "instructions": data.get("instructions_original") or data.get("instructions", ""),
+            "supported_languages": SUPPORTED_LANGUAGES,
+        })
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to read user context: {exc}")
+
+
+@router.put("/user-context")
+async def save_user_context(req: UserContextRequest):
+    """Save user context to bot/user_context.json.
+
+    Instructions are translated to English before storage so the Private AI
+    always receives them in English, regardless of the user's native language.
+    The original text is kept separately for display in the UI.
+    """
+    language = req.language.strip()
+    instructions = req.instructions.strip()
+
+    if language and language not in SUPPORTED_LANGUAGES:
+        raise HTTPException(status_code=400, detail=f"Unsupported language: '{language}'. Choose from the supported list.")
+
+    instructions_en = instructions
+    if instructions and language and language.lower() != "english":
+        try:
+            import intent_parser as _ip
+            translated = _ip.translate_to_english(instructions, language)
+            if translated:
+                instructions_en = translated
+                logger.info("💬 User context instructions translated to English (%d chars)", len(instructions_en))
+        except Exception as exc:
+            logger.warning("💬 Could not translate user context instructions: %s", exc)
+
+    data = {
+        "language": language,
+        "instructions": instructions_en,          # English — injected into AI calls
+        "instructions_original": instructions,    # Native language — shown in UI
+    }
+    _USER_CONTEXT_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    logger.info("💬 User context saved: language=%s, instructions=%d chars", language, len(instructions))
+    return JSONResponse(content={"ok": True})
+
+
+@router.delete("/user-context")
+async def clear_user_context():
+    """Remove the user context file, disabling all custom behavioural hints."""
+    if _USER_CONTEXT_FILE.exists():
+        _USER_CONTEXT_FILE.unlink()
+
+
+_EXAMPLE_EN = (
+    "Requests are almost always in {language}. "
+    "Don't translate the name 'kasetta'. "
+    "The user is mostly interested in weekend weather — always calculate from today's date."
+)
+
+
+class TranslateExampleRequest(BaseModel):
+    language: str
+
+
+@router.post("/user-context/translate-example")
+async def translate_example(req: TranslateExampleRequest):
+    """Return the instructions placeholder example translated to the requested language."""
+    language = req.language.strip()
+    if not language or language.lower() == "english":
+        return JSONResponse(content={"text": "e.g. " + _EXAMPLE_EN.format(language="English")})
+    if language not in SUPPORTED_LANGUAGES:
+        raise HTTPException(status_code=400, detail=f"Unsupported language: {language}")
+    base = _EXAMPLE_EN.format(language=language)
+    try:
+        import intent_parser as _ip
+        translated = _ip.translate_from_english(base, language)
+        return JSONResponse(content={"text": translated or base})
+    except Exception:
+        return JSONResponse(content={"text": base})
+        logger.info("💬 User context cleared")
+    return JSONResponse(content={"ok": True})
+
+
 # ── Installation Wizard ──────────────────────────────────────────────────────
 
 class PullModelRequest(BaseModel):

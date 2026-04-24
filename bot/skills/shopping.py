@@ -1,7 +1,10 @@
 import logging
 import re
+import requests
 from typing import List, Optional, Any, Dict
 from pydantic import BaseModel
+
+import intent_parser
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +49,39 @@ class ShowIn(BaseModel):
 
 
 _STOP_WORDS = {"for", "the", "a", "an", "of", "to", "and", "or", "with", "in", "on", "some"}
+
+
+def _llm_match_item(query: str, candidates: list) -> str | None:
+    """Use the LLM to find the best semantic match (synonym/translation) for *query*
+    among *candidates*. Only called when all lexical fallbacks have failed."""
+    if not candidates:
+        return None
+    items_str = "\n".join(f"- {c}" for c in candidates)
+    prompt = (
+        f"You are a shopping list assistant. "
+        f"Which item in the list below is the same as, or a synonym of: '{query}'?\n\n"
+        f"List:\n{items_str}\n\n"
+        "Reply with ONLY the exact item name from the list that matches best, "
+        "or 'none' if nothing is semantically similar. No explanation."
+    )
+    try:
+        response = requests.post(intent_parser.OLLAMA_URL, json={
+            "model": intent_parser.MODEL,
+            "prompt": prompt,
+            "stream": False,
+            "options": {"temperature": 0},
+        }, timeout=30)
+        result = response.json().get("response", "").strip().strip('"').strip("'")
+        if not result or result.lower() == "none":
+            return None
+        # Validate the LLM returned an actual candidate (case-insensitive)
+        for c in candidates:
+            if c.lower() == result.lower():
+                return c
+        return None
+    except Exception as e:
+        logger.debug("_llm_match_item error: %s", e)
+        return None
 
 
 def _word_overlap_score(query: str, candidate: str) -> float:
@@ -129,6 +165,12 @@ def remove_items_tool(payload: dict) -> Dict[str, Any]:
         if matched_overlap:
             messages.append(remove_item(matched_overlap[0]))
             continue
+        # Fuzzy fallback 3: LLM semantic synonym matching
+        llm_match = _llm_match_item(n, pending)
+        if llm_match:
+            logger.debug("shopping.remove: LLM matched '%s' → '%s'", n, llm_match)
+            messages.append(remove_item(llm_match))
+            continue
         messages.append(res)
 
     return _format_result_with_list(messages)
@@ -162,6 +204,12 @@ def bought_items_tool(payload: dict) -> Dict[str, Any]:
         matched_overlap = [p for p in pending if _word_overlap_score(it.name, p) >= 0.5]
         if matched_overlap:
             messages.append(mark_bought(matched_overlap[0]))
+            continue
+        # Fuzzy fallback 3: LLM semantic synonym matching
+        llm_match = _llm_match_item(it.name, pending)
+        if llm_match:
+            logger.debug("shopping.bought: LLM matched '%s' → '%s'", it.name, llm_match)
+            messages.append(mark_bought(llm_match))
             continue
         # Otherwise add and mark as bought
         messages.append(add_and_mark_bought(it.name, it.category or "other"))

@@ -294,6 +294,11 @@ if _UI_BUILD.exists():
                 return await super().get_response(path, scope)
             except StarletteHTTPException as exc:
                 if exc.status_code == 404:
+                    # Never serve the SPA fallback for API paths — let the 404 propagate
+                    # so callers get a proper error instead of HTML masquerading as JSON.
+                    request_path = scope.get("path", "")
+                    if request_path.startswith("/admin/api") or request_path.startswith("/message"):
+                        raise
                     return await super().get_response("index.html", scope)
                 raise
 

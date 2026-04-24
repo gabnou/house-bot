@@ -11,6 +11,26 @@ import time
 logger = logging.getLogger(__name__)
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
+
+_USER_CONTEXT_FILE = os.path.join(os.path.dirname(__file__), "user_context.json")
+
+
+def get_user_context() -> dict | None:
+    """Load user-defined behavioural context (preferred language + custom instructions).
+
+    Returns the stored dict only when non-empty instructions are present.
+    Reads from disk each call so changes saved via the Admin API take effect
+    on the next message without requiring a restart.
+    """
+    try:
+        if os.path.exists(_USER_CONTEXT_FILE):
+            with open(_USER_CONTEXT_FILE, encoding="utf-8") as f:
+                data = json.load(f)
+            if data.get("instructions", "").strip():
+                return data
+    except Exception:
+        pass
+    return None
 MODEL = os.getenv("OLLAMA_MODEL", "mistral-small:22b")
 EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text:latest")
 _OLLAMA_BASE = OLLAMA_URL.rsplit("/api/", 1)[0]
@@ -242,13 +262,20 @@ def _parse_raw(raw: str) -> dict:
 def detect_language(text: str) -> dict:
     """Ask the LLM to detect the language of a message.
     Returns {"language": "...", "confidence": "high"|"medium"|"low"} or None on error."""
+    ctx = get_user_context()
+    lang_hint = ""
+    if ctx and ctx.get("language") and ctx["language"].lower() != "english":
+        lang_hint = (
+            f"\nUser language preference: The user's primary language is {ctx['language']}. "
+            f"When the text is ambiguous between {ctx['language']} and a similar language, prefer {ctx['language']}."
+        )
     prompt = (
         "Detect the language of the following text. "
         "Respond ONLY with a valid JSON object with two fields:\n"
         '- "language": the full English name of the language (e.g. "Spanish", "Italian", "French", "German").\n'
         '- "confidence": "high", "medium", or "low".\n'
         "If the text is in English, respond with {\"language\": \"English\", \"confidence\": \"high\"}.\n\n"
-        f"Text: \"{text}\"\nResponse:"
+        f"{lang_hint}\nText: \"{text}\"\nResponse:"
     )
     try:
         response = requests.post(OLLAMA_URL, json={
@@ -267,10 +294,18 @@ def detect_language(text: str) -> dict:
 
 def translate_to_english(text: str, source_language: str) -> str | None:
     """Translate text from a detected language to English using the LLM."""
+    ctx = get_user_context()
+    user_rules = ""
+    if ctx and ctx.get("instructions", "").strip():
+        user_rules = (
+            f"\nUser-defined rules (follow these when translating):\n{ctx['instructions'].strip()}\n"
+        )
     prompt = (
         f"Translate the following {source_language} text to English. "
         "Respond ONLY with the English translation, nothing else. "
-        "Translate only the action/command words; do NOT translate proper nouns, personal names, or specific event/item titles — keep those exactly as they appear in the original text.\n\n"
+        "Translate ALL words including food items, grocery items, household products, and common words. "
+        "The ONLY exceptions (keep exactly as in the original): personal names (people's names), geographical place names, and calendar event titles."
+        f"{user_rules}\n\n"
         f"Text: \"{text}\"\nTranslation:"
     )
     try:
@@ -290,11 +325,18 @@ def translate_to_english(text: str, source_language: str) -> str | None:
 
 def translate_from_english(text: str, target_language: str) -> str | None:
     """Translate an English response to the target language using the LLM."""
+    ctx = get_user_context()
+    user_rules = ""
+    if ctx and ctx.get("instructions", "").strip():
+        user_rules = (
+            f"\nUser-defined rules (follow these when translating):\n{ctx['instructions'].strip()}\n"
+        )
     prompt = (
         f"Translate the following English text to {target_language}. "
         "Output ONLY the translated text — no explanations, no notes, no comments, no parenthetical remarks, no quotation marks around the output. "
         "Translate ALL words including: grocery items, food items, household products, common words, and command keywords. "
-        "The ONLY exceptions (keep exactly as in the original): personal names (people's names), geographical place names, and calendar event titles.\n\n"
+        "The ONLY exceptions (keep exactly as in the original): personal names (people's names), geographical place names, and calendar event titles."
+        f"{user_rules}\n\n"
         f"Text:\n{text}\n\nTranslation:"
     )
     try:
@@ -340,10 +382,16 @@ def parse_intent(text: str) -> dict:
     from skills.registry import get_prompt
     category = detect_category(text)
     prompt_fn = get_prompt(category) if category else None
-    if prompt_fn:
-        prompt_text = f"{prompt_fn()}\n\nMessage: \"{text}\"\nResponse:"
+    base_prompt = prompt_fn() if prompt_fn else get_system_prompt()
+    ctx = get_user_context()
+    if ctx and ctx.get("instructions", "").strip():
+        ctx_block = (
+            f"\n[User-defined context — always follow these instructions]\n"
+            f"{ctx['instructions'].strip()}\n"
+        )
+        prompt_text = f"{base_prompt}{ctx_block}\nMessage: \"{text}\"\nResponse:"
     else:
-        prompt_text = f"{get_system_prompt()}\n\nMessage: \"{text}\"\nResponse:"
+        prompt_text = f"{base_prompt}\n\nMessage: \"{text}\"\nResponse:"
 
     payload = {
         "model": MODEL,
