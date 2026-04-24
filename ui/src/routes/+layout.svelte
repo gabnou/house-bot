@@ -150,7 +150,7 @@
 
 		<!-- Footer: release version or git info -->
 		{#if releaseVersion}
-		<footer class="shrink-0 px-6 py-2 border-t border-surface-200-800">
+		<footer class="shrink-0 px-6 py-2 border-t border-surface-200-800 flex items-center justify-between">
 			<a
 				href="https://github.com/gabnou/house-bot/releases/tag/{releaseVersion}"
 				target="_blank"
@@ -161,9 +161,10 @@
 				<span>🔖</span>
 				<span>{releaseVersion}</span>
 			</a>
+			<span class="font-mono text-[11px] text-surface-400-600 italic">made for learning purposes, and fixing family headaches</span>
 		</footer>
 		{:else if gitHash}
-		<footer class="shrink-0 px-6 py-2 border-t border-surface-200-800">
+		<footer class="shrink-0 px-6 py-2 border-t border-surface-200-800 flex items-center justify-between">
 			<a
 				href={gitCommitUrl || undefined}
 				target="_blank"
@@ -178,6 +179,7 @@
 				<span class="opacity-50">·</span>
 				<span>{gitDate}</span>
 			</a>
+			<span class="font-mono text-[11px] text-surface-400-600 italic">made for learning purposes, and fixing family headaches</span>
 		</footer>
 		{/if}
 	</div>
