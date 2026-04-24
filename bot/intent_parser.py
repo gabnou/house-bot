@@ -54,13 +54,21 @@ _anchor_lock = threading.Lock()
 def _get_embedding(text: str) -> list[float] | None:
     """Return the embedding vector for *text* using the embed model."""
     keep_alive = os.getenv("OLLAMA_KEEP_ALIVE", "5m")
+    logger.debug("🧬 embed request → model=%s text=%r", EMBED_MODEL, text)
     try:
+        t0 = time.time()
         resp = requests.post(EMBED_URL, json={
             "model": EMBED_MODEL,
             "prompt": text,
             "keep_alive": keep_alive,
         }, timeout=15)
-        return resp.json().get("embedding")
+        vec = resp.json().get("embedding")
+        elapsed = time.time() - t0
+        if vec is not None:
+            logger.debug("🧬 embed response ← %.2fs, dim=%d", elapsed, len(vec))
+        else:
+            logger.debug("🧬 embed response ← %.2fs, no embedding in response", elapsed)
+        return vec
     except Exception as e:
         logger.warning("⚠️ _get_embedding error: %s", e)
         return None
