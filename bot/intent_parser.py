@@ -18,19 +18,27 @@ _USER_CONTEXT_FILE = os.path.join(os.path.dirname(__file__), "user_context.json"
 def get_user_context() -> dict | None:
     """Load user-defined behavioural context (preferred language + custom instructions).
 
-    Returns the stored dict when either language or instructions is non-empty.
-    Reads from disk each call so changes saved via the Admin API take effect
+    Language is always taken from the USER_LANGUAGE env var.
+    Instructions are read from disk each call so Admin API changes take effect
     on the next message without requiring a restart.
     """
+    language = os.getenv("USER_LANGUAGE", "").strip()
+    instructions = ""
+    instructions_original = ""
     try:
         if os.path.exists(_USER_CONTEXT_FILE):
             with open(_USER_CONTEXT_FILE, encoding="utf-8") as f:
                 data = json.load(f)
-            if data.get("language", "").strip() or data.get("instructions", "").strip():
-                return data
+            instructions = data.get("instructions", "").strip()
+            instructions_original = data.get("instructions_original", "").strip()
     except Exception:
         pass
-    return None
+    if not language and not instructions:
+        return None
+    result: dict = {"language": language, "instructions": instructions}
+    if instructions_original:
+        result["instructions_original"] = instructions_original
+    return result
 MODEL = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
 EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text:latest")
 _OLLAMA_BASE = OLLAMA_URL.rsplit("/api/", 1)[0]

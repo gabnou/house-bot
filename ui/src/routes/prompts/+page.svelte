@@ -5,10 +5,9 @@
 	// ── User Context ─────────────────────────────────────────────────────────
 
 	interface UserContextState {
-		language: string;
+		language: string;           // read-only: from USER_LANGUAGE env via API
 		instructions: string;
-		original: { language: string; instructions: string };
-		supportedLanguages: string[];
+		original: { instructions: string };
 		loading: boolean;
 		saving: boolean;
 		clearing: boolean;
@@ -18,8 +17,7 @@
 	let uctx = $state<UserContextState>({
 		language: '',
 		instructions: '',
-		original: { language: '', instructions: '' },
-		supportedLanguages: [],
+		original: { instructions: '' },
 		loading: true,
 		saving: false,
 		clearing: false,
@@ -35,8 +33,7 @@
 			const data = await res.json();
 			uctx.language        = data.language ?? '';
 			uctx.instructions    = data.instructions ?? '';
-			uctx.original        = { language: uctx.language, instructions: uctx.instructions };
-			uctx.supportedLanguages = data.supported_languages ?? [];
+		uctx.original        = { instructions: uctx.instructions };
 		} catch (e: unknown) {
 			uctx.msg = { ok: false, text: e instanceof Error ? e.message : 'Load failed' };
 		} finally {
@@ -51,11 +48,11 @@
 			const res = await fetch('/admin/api/user-context', {
 				method: 'PUT',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ language: uctx.language, instructions: uctx.instructions }),
+				body: JSON.stringify({ instructions: uctx.instructions }),
 			});
 			const data = await res.json();
 			if (res.ok && data.ok) {
-				uctx.original = { language: uctx.language, instructions: uctx.instructions };
+					uctx.original = { instructions: uctx.instructions };
 				uctx.msg = { ok: true, text: 'Saved — takes effect on next message.' };
 			} else {
 				uctx.msg = { ok: false, text: data.detail ?? 'Save failed' };
@@ -73,9 +70,8 @@
 		try {
 			const res = await fetch('/admin/api/user-context', { method: 'DELETE' });
 			if (!res.ok) throw new Error(`HTTP ${res.status}`);
-			uctx.language     = '';
 			uctx.instructions = '';
-			uctx.original     = { language: '', instructions: '' };
+			uctx.original     = { instructions: '' };
 			uctx.msg = { ok: true, text: 'User context cleared.' };
 		} catch (e: unknown) {
 			uctx.msg = { ok: false, text: e instanceof Error ? e.message : 'Clear failed' };
@@ -84,7 +80,7 @@
 		}
 	}
 
-	let uctxDirty = $derived(uctx.language !== uctx.original.language || uctx.instructions !== uctx.original.instructions);
+	let uctxDirty = $derived(uctx.instructions !== uctx.original.instructions);
 	let uctxActive = $derived(uctx.original.instructions.trim().length > 0);
 
 	const _PLACEHOLDER_EN = "e.g. Requests are almost always in English. Don't translate the name 'kasetta'. The user is mostly interested in weekend weather — always calculate from today's date.";
@@ -164,20 +160,13 @@
 				<div class="h-8 rounded-lg bg-surface-100-900 animate-pulse w-48"></div>
 				<div class="h-32 rounded-lg bg-surface-100-900 animate-pulse"></div>
 			{:else}
-				<!-- Language selector -->
+				<!-- Language display (read-only, from USER_LANGUAGE env) -->
 				<div class="flex items-center gap-3">
-					<label for="uctx-lang" class="text-xs font-medium text-surface-400-600 shrink-0 w-28">Primary language</label>
-					<select
-						id="uctx-lang"
-						bind:value={uctx.language}
-						class="flex-1 text-xs bg-white text-black border border-surface-300 rounded-lg px-3 py-1.5
-						focus:outline-none focus:ring-1 focus:ring-primary-500/60 transition-colors"
-					>
-						<option value="">— not set —</option>
-						{#each uctx.supportedLanguages as lang}
-							<option value={lang}>{lang}</option>
-						{/each}
-					</select>
+					<span class="text-xs font-medium text-surface-400-600 shrink-0 w-28">Primary language</span>
+					<span class="text-xs">
+						{uctx.language || '(not set)'}
+						<span class="ml-1.5 text-[10px] text-surface-400-600">(change in Config → Location)</span>
+					</span>
 				</div>
 
 				<!-- Instructions textarea -->
@@ -209,7 +198,7 @@
 						{uctx.saving ? 'Saving…' : '💾 Save'}
 					</button>
 					<button
-						onclick={() => { uctx.language = uctx.original.language; uctx.instructions = uctx.original.instructions; }}
+						onclick={() => { uctx.instructions = uctx.original.instructions; }}
 						disabled={!uctxDirty || uctx.saving}
 						class="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors
 						bg-surface-200-800 text-surface-500-500 hover:bg-surface-300-700

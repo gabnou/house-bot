@@ -377,7 +377,7 @@ async def status():
         {"key": "DEFAULT_CITY",       "value": os.getenv("DEFAULT_CITY", ""),          "label": "Default City"},
         {"key": "TIMEZONE_DEFAULT",   "value": os.getenv("TIMEZONE_DEFAULT", ""),      "label": "Timezone"},
         {"key": "BRIEFING_TIME",      "value": os.getenv("BRIEFING_TIME", "07:30"),    "label": "Briefing Time"},
-        {"key": "BRIEFING_LANGUAGE",  "value": os.getenv("BRIEFING_LANGUAGE", ""),     "label": "Briefing Language"},
+        {"key": "USER_LANGUAGE",      "value": os.getenv("USER_LANGUAGE", ""),          "label": "User Language"},
         {"key": "LOG_LEVEL",          "value": os.getenv("LOG_LEVEL", "INFO"),         "label": "Log Level"},
         {"key": "GOOGLE_CALENDAR_NAME","value": os.getenv("GOOGLE_CALENDAR_NAME", ""), "label": "Calendar"},
     ]
@@ -1383,44 +1383,41 @@ SUPPORTED_LANGUAGES = [
 
 
 class UserContextRequest(BaseModel):
-    language: str
     instructions: str
 
 
 @router.get("/user-context")
 async def get_user_context():
-    """Return the current user context (language preference + behavioural instructions)."""
-    if not _USER_CONTEXT_FILE.exists():
-        return JSONResponse(content={
-            "language": "",
-            "instructions": "",
-            "supported_languages": SUPPORTED_LANGUAGES,
-        })
-    try:
-        data = json.loads(_USER_CONTEXT_FILE.read_text(encoding="utf-8"))
-        return JSONResponse(content={
-            "language": data.get("language", ""),
+    """Return the current user context.
+
+    Language comes from the USER_LANGUAGE env var; instructions from the JSON file.
+    """
+    language = os.getenv("USER_LANGUAGE", "").strip()
+    instructions = ""
+    if _USER_CONTEXT_FILE.exists():
+        try:
+            data = json.loads(_USER_CONTEXT_FILE.read_text(encoding="utf-8"))
             # Return the original (native-language) text to the UI for display
-            "instructions": data.get("instructions_original") or data.get("instructions", ""),
-            "supported_languages": SUPPORTED_LANGUAGES,
-        })
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to read user context: {exc}")
+            instructions = data.get("instructions_original") or data.get("instructions", "")
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to read user context: {exc}")
+    return JSONResponse(content={
+        "language": language,
+        "instructions": instructions,
+    })
 
 
 @router.put("/user-context")
 async def save_user_context(req: UserContextRequest):
-    """Save user context to bot/user_context.json.
+    """Save user context instructions to bot/user_context.json.
 
     Instructions are translated to English before storage so the Private AI
     always receives them in English, regardless of the user's native language.
     The original text is kept separately for display in the UI.
+    Language is always read from USER_LANGUAGE env var — not stored here.
     """
-    language = req.language.strip()
+    language = os.getenv("USER_LANGUAGE", "").strip()
     instructions = req.instructions.strip()
-
-    if language and language not in SUPPORTED_LANGUAGES:
-        raise HTTPException(status_code=400, detail=f"Unsupported language: '{language}'. Choose from the supported list.")
 
     instructions_en = instructions
     if instructions and language and language.lower() != "english":
@@ -1434,12 +1431,11 @@ async def save_user_context(req: UserContextRequest):
             logger.warning("💬 Could not translate user context instructions: %s", exc)
 
     data = {
-        "language": language,
         "instructions": instructions_en,          # English — injected into AI calls
         "instructions_original": instructions,    # Native language — shown in UI
     }
     _USER_CONTEXT_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    logger.info("💬 User context saved: language=%s, instructions=%d chars", language, len(instructions))
+    logger.info("💬 User context saved: instructions=%d chars", len(instructions))
     return JSONResponse(content={"ok": True})
 
 
@@ -2152,7 +2148,7 @@ class LocationSettingsRequest(BaseModel):
     latitude: float
     longitude: float
     timezone: str
-    briefing_language: str
+    user_language: str
 
 
 @router.get("/install/location")
@@ -2163,7 +2159,7 @@ async def get_location_settings():
         "latitude":          os.getenv("DEFAULT_LATITUDE", ""),
         "longitude":         os.getenv("DEFAULT_LONGITUDE", ""),
         "timezone":          os.getenv("TIMEZONE_DEFAULT", ""),
-        "briefing_language": os.getenv("BRIEFING_LANGUAGE", "English"),
+        "user_language": os.getenv("USER_LANGUAGE", "English"),
         "timezones":         _TIMEZONES,
     })
 
@@ -2173,7 +2169,7 @@ async def save_location_settings(req: LocationSettingsRequest):
     """Persist location and briefing settings to .env."""
     city = req.city.strip()
     timezone = req.timezone.strip()
-    lang = req.briefing_language.strip()
+    lang = req.user_language.strip()
 
     if not city:
         raise HTTPException(status_code=400, detail="City name is required")
@@ -2186,13 +2182,13 @@ async def save_location_settings(req: LocationSettingsRequest):
     _env_set("DEFAULT_LATITUDE",  str(round(req.latitude,  6)))
     _env_set("DEFAULT_LONGITUDE", str(round(req.longitude, 6)))
     _env_set("TIMEZONE_DEFAULT",  timezone)
-    _env_set("BRIEFING_LANGUAGE", lang)
+    _env_set("USER_LANGUAGE",     lang)
 
     os.environ["DEFAULT_CITY"]      = city
     os.environ["DEFAULT_LATITUDE"]  = str(round(req.latitude,  6))
     os.environ["DEFAULT_LONGITUDE"] = str(round(req.longitude, 6))
     os.environ["TIMEZONE_DEFAULT"]  = timezone
-    os.environ["BRIEFING_LANGUAGE"] = lang
+    os.environ["USER_LANGUAGE"]     = lang
 
     logger.info("✅ Location settings saved: %s (%.4f, %.4f) tz=%s lang=%s",
                 city, req.latitude, req.longitude, timezone, lang)

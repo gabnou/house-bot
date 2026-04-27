@@ -6,8 +6,6 @@
 	type CatalogModel = { id: string; family: string; description: string; ram: string };
 
 	// ── Language constants ────────────────────────────────────────────────────
-	const PINNED_LANGUAGES = ['English', 'Italian', 'Spanish', 'French'];
-
 	const ALL_LANGUAGES = [
 		'Afrikaans', 'Albanian', 'Amharic', 'Arabic', 'Armenian', 'Azerbaijani',
 		'Basque', 'Belarusian', 'Bengali', 'Bosnian', 'Breton', 'Bulgarian', 'Burmese',
@@ -412,7 +410,6 @@
 	$effect(() => {
 		function handleClickOutside(e: MouseEvent) {
 			if (comboboxEl && !comboboxEl.contains(e.target as Node)) catalogOpen = false;
-			if (locLangComboEl && !locLangComboEl.contains(e.target as Node)) locLangOpen = false;
 		}
 		document.addEventListener('mousedown', handleClickOutside);
 		return () => document.removeEventListener('mousedown', handleClickOutside);
@@ -835,18 +832,6 @@
 	let locTimezone          = $state('');
 	let locLang              = $state('English');
 	let locTimezones         = $state<string[]>([]);
-	let locDetectedLang      = $state('');          // auto-detected from picked country
-	let locLangQuery         = $state('');          // combobox input
-	let locLangOpen          = $state(false);
-	let locLangComboEl       = $state<HTMLDivElement | null>(null);
-
-	const filteredLangOptions = $derived(
-		ALL_LANGUAGES.filter(l => {
-			if (!locLangQuery.trim()) return true;
-			return l.toLowerCase().includes(locLangQuery.toLowerCase());
-		})
-	);
-
 	let locSearchQuery       = $state('');
 	let locSearching         = $state(false);
 	let locSearchError       = $state<string | null>(null);
@@ -880,8 +865,7 @@
 				locLat       = data.latitude  ?? '';
 				locLon       = data.longitude ?? '';
 				locTimezone  = data.timezone  ?? '';
-				locLang      = data.briefing_language ?? 'English';
-				locLangQuery = locLang;
+				locLang      = data.user_language ?? 'English';
 				locTimezones = data.timezones ?? [];
 			}
 		} catch { /* non-fatal */ }
@@ -923,7 +907,7 @@
 		locSearchQuery   = '';
 		// Auto-detect official language for the chosen country
 		const detected = COUNTRY_LANGUAGE_MAP[r.country] ?? '';
-		locDetectedLang = detected && !PINNED_LANGUAGES.includes(detected) ? detected : '';
+		if (detected && ALL_LANGUAGES.includes(detected)) locLang = detected;
 	}
 
 	async function saveLocationSettings() {
@@ -939,7 +923,7 @@
 					latitude:          parseFloat(locLat),
 					longitude:         parseFloat(locLon),
 					timezone:          locTimezone.trim(),
-					briefing_language: locLang,
+					user_language: locLang,
 				}),
 			});
 			if (res.ok) {
@@ -2071,59 +2055,20 @@
 							</div>
 						</div>
 
-						<!-- Briefing language -->
+						<!-- Primary User Language -->
 						<div class="space-y-2">
-							<label class="text-[10px] text-surface-400-600 font-medium uppercase tracking-wide" for="loc-lang-input">Morning briefing language</label>
-							<p class="text-[10px] text-surface-400-600">The language used for the daily morning briefing sent to all partners.</p>
-
-							<!-- Quick-pick chips: pinned + detected country language -->
-							<div class="flex flex-wrap gap-2 pt-1">
-								{#each PINNED_LANGUAGES as lang}
-									<button
-										onclick={() => { locLang = lang; locLangQuery = lang; locLangOpen = false; }}
-										class="px-3 py-1 rounded-lg text-xs font-medium border transition-colors
-											{locLang === lang
-												? 'border-primary-500/60 bg-primary-500/15 text-primary-400'
-												: 'border-surface-300-700 text-surface-500-500 hover:bg-surface-100-900'}"
-									>{lang}</button>
+							<label class="text-[10px] text-surface-400-600 font-medium uppercase tracking-wide" for="loc-lang-select">Primary User Language</label>
+							<p class="text-[10px] text-surface-400-600">The language used by the bot.</p>
+							<select
+								id="loc-lang-select"
+								bind:value={locLang}
+								class="w-full text-xs rounded-lg px-3 py-2 bg-surface-100-900 border border-surface-200-800
+								       text-surface-900-50 focus:outline-none focus:border-primary-500/60"
+							>
+								{#each ALL_LANGUAGES as lang}
+									<option value={lang}>{lang}</option>
 								{/each}
-								{#if locDetectedLang}
-									<button
-										onclick={() => { locLang = locDetectedLang; locLangQuery = locDetectedLang; locLangOpen = false; }}
-										class="px-3 py-1 rounded-lg text-xs font-medium border transition-colors
-											{locLang === locDetectedLang
-												? 'border-primary-500/60 bg-primary-500/15 text-primary-400'
-												: 'border-surface-300-700 text-surface-500-500 hover:bg-surface-100-900'}"
-									>{locDetectedLang} <span class="text-[10px] text-surface-400-600 ml-1">detected</span></button>
-								{/if}
-							</div>
-
-							<!-- Searchable combobox for all languages -->
-							<div class="relative" bind:this={locLangComboEl}>
-								<input
-									id="loc-lang-input"
-									type="text"
-									bind:value={locLangQuery}
-									oninput={() => { locLangOpen = true; locLang = locLangQuery.trim(); }}
-									onfocus={() => locLangOpen = true}
-									placeholder="Search or type a language…"
-									class="w-full text-xs rounded-lg px-3 py-2 bg-surface-100-900 border border-surface-200-800
-									       text-surface-900-50 placeholder:text-surface-400-600
-									       focus:outline-none focus:border-primary-500/60"
-								/>
-								{#if locLangOpen && filteredLangOptions.length > 0}
-									<div class="absolute z-50 top-full left-0 right-0 mt-1 max-h-48 overflow-y-auto
-									bg-surface-50-950 border border-surface-200-800 rounded-lg shadow-2xl">
-										{#each filteredLangOptions as lang}
-											<button
-												onclick={() => { locLang = lang; locLangQuery = lang; locLangOpen = false; }}
-												class="w-full text-left px-3 py-2 text-xs hover:bg-surface-100-900 transition-colors
-												{locLang === lang ? 'bg-primary-500/10 text-primary-400' : 'text-surface-900-50'}"
-											>{lang}</button>
-										{/each}
-									</div>
-								{/if}
-							</div>
+							</select>
 						</div>
 					</div>
 

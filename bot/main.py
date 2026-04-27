@@ -271,6 +271,15 @@ async def handle_message(msg: Message):
         else:
             logger.warning("⚠️ Back-translation to %s failed — reply sent in English", detected_lang)
 
+    # Translate shopping notification using USER_LANGUAGE (goes to all partners)
+    user_lang = os.getenv("USER_LANGUAGE", "").strip()
+    if notification and user_lang and user_lang.lower() != "english":
+        translated_notification = translate_from_english(notification, user_lang)
+        if translated_notification:
+            notification = translated_notification
+        else:
+            logger.warning("⚠️ Notification translation to %s failed — sent in English", user_lang)
+
     return {"reply": reply, "notification": notification}
 
 # Serve the SvelteKit production build (ui/build/) if it exists.
