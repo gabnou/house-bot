@@ -15,7 +15,7 @@ Your home assistant on WhatsApp — manage a shared shopping list, keep your Goo
 - 📅 **Google Calendar** — check, add, edit, and delete events by natural language. *(optional — requires a Google account)*
 - 🎙️ **Voice messages** — send a voice note and the bot transcribes and processes it automatically.
 - 🌍 **Any language** — write in Italian, Spanish, French, or any language. The bot detects it, processes your request, and replies in the same language.
-- 🌅 **Morning briefing** — a daily message at 07:30 with weather, today's agenda, and a motivational quote.
+- 🌅 **Morning briefing** — a daily message at 07:30 (configurable) with weather, today's agenda, and a motivational quote.
 
 ---
 
