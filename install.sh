@@ -63,7 +63,7 @@ RAM_BYTES=$(sysctl -n hw.memsize 2>/dev/null || echo 0)
 RAM_GB=$(( RAM_BYTES / 1024 / 1024 / 1024 ))
 if (( RAM_GB < 8 )); then
   _warn "${RAM_GB}GB RAM detected — 8GB or more is recommended to run an LLM locally."
-  _warn "You may run out of memory. Consider a lightweight model (e.g. llama3.1:8b)."
+  _warn "You may run out of memory. Consider a lightweight model (e.g. llama3.2:3b)."
   echo
   read -rp "  Continue anyway? [y/N] " _ANS
   [[ "${_ANS,,}" == "y" ]] || exit 0
@@ -105,7 +105,7 @@ _header
 _step "Step 2 — Python 3.11+"
 
 PYTHON=""
-for _candidate in python3.13 python3.12 python3.11; do
+for _candidate in python3.12 python3.13 python3.11; do
   if command -v "$_candidate" &>/dev/null; then
     PYTHON="$_candidate"
     _ok "Found $PYTHON ($($PYTHON --version))"
@@ -114,16 +114,16 @@ for _candidate in python3.13 python3.12 python3.11; do
 done
 
 if [[ -z "$PYTHON" ]]; then
-  _info "Python 3.11+ not found — installing Python 3.13 via Homebrew..."
-  brew install python@3.13
-  # Brew installs as python3.13 in its prefix
-  BREW_PYTHON="$(brew --prefix)/bin/python3.13"
+  _info "Python 3.11+ not found — installing Python 3.12 via Homebrew..."
+  brew install python@3.12
+  # Brew installs as python3.12 in its prefix
+  BREW_PYTHON="$(brew --prefix)/bin/python3.12"
   if [[ -x "$BREW_PYTHON" ]]; then
     PYTHON="$BREW_PYTHON"
   else
-    PYTHON="python3.13"
+    PYTHON="python3.12"
   fi
-  _ok "Python 3.13 installed ($($PYTHON --version))"
+  _ok "Python 3.12 installed ($($PYTHON --version))"
 fi
 
 _pause
@@ -165,7 +165,7 @@ fi
 
 _warn "No LLM model will be pulled at this stage."
 _warn "After the installer finishes, use the Control Panel to pull a model"
-_warn "(e.g. 'ollama pull mistral-small:22b' or 'ollama pull llama3.1:8b')."
+_warn "(e.g. 'ollama pull llama3.2:3b' or 'ollama pull llama3.1:8b')."
 
 # Pull the embedding model if not already present.
 # nomic-embed-text is small (~270 MB) and required for fast multilingual intent classification.
@@ -176,6 +176,7 @@ _info "Checking embedding model '${_EMBED_MODEL}'..."
 # Ensure Ollama is running so we can query the model list
 if ! curl -s http://localhost:11434/ &>/dev/null; then
   _info "Starting Ollama temporarily to check for the embedding model..."
+  mkdir -p "$PROJECT_DIR/logs"
   nohup ollama serve > "$PROJECT_DIR/logs/ollama.log" 2>&1 &
   for _i in $(seq 1 20); do
     sleep 1
@@ -206,9 +207,37 @@ _step "Step 5 — Node.js, bridge & Control Panel UI"
 if command -v node &>/dev/null; then
   _ok "Node.js already installed ($(node --version))"
 else
-  _info "Installing Node.js via Homebrew..."
-  brew install node
-  _ok "Node.js installed ($(node --version))"
+  echo
+  echo -e "  How would you like to install Node.js?"
+  echo -e "  ${BOLD}[1]${NC} Download official installer from nodejs.org ${DIM}(recommended — fast)${NC}"
+  echo -e "  ${BOLD}[2]${NC} Install via Homebrew ${DIM}(slower — triggers brew update)${NC}"
+  echo
+  read -rp "  Choice [1]: " _NODE_CHOICE
+  _NODE_CHOICE="${_NODE_CHOICE:-1}"
+
+  if [[ "$_NODE_CHOICE" == "2" ]]; then
+    _info "Installing Node.js via Homebrew..."
+    brew install node
+    _ok "Node.js installed ($(node --version))"
+  else
+    _info "Fetching latest Node.js LTS version number..."
+    NODE_VERSION=$("$PYTHON" -c "
+import urllib.request, json
+data = json.loads(urllib.request.urlopen('https://nodejs.org/dist/index.json').read())
+lts = [v for v in data if v['lts']]
+print(lts[0]['version'])
+")
+    [[ "$(uname -m)" == "arm64" ]] && _NODE_ARCH="arm64" || _NODE_ARCH="x64"
+    NODE_PKG="node-${NODE_VERSION}-darwin-${_NODE_ARCH}.pkg"
+    NODE_URL="https://nodejs.org/dist/${NODE_VERSION}/${NODE_PKG}"
+    _info "Downloading ${NODE_PKG}..."
+    curl -fSL "$NODE_URL" -o /tmp/node-installer.pkg
+    _info "Installing Node.js (you may be prompted for your password)..."
+    sudo installer -pkg /tmp/node-installer.pkg -target /
+    rm -f /tmp/node-installer.pkg
+    export PATH="/usr/local/bin:$PATH"
+    _ok "Node.js installed ($(node --version))"
+  fi
 fi
 
 _info "Installing bridge (Node.js) dependencies..."
@@ -238,7 +267,7 @@ if [[ ! -f "$PROJECT_DIR/.env" ]]; then
     _warn ".env.example not found — a minimal .env will be created"
     cat > "$PROJECT_DIR/.env" <<'EOF'
 OLLAMA_URL=http://localhost:11434/api/generate
-OLLAMA_MODEL=mistral-small:22b
+OLLAMA_MODEL=llama3.2:3b
 WHISPER_MODEL=small
 LOG_LEVEL=INFO
 GOOGLE_CALENDAR_NAME=
@@ -290,7 +319,7 @@ echo
 echo -e "    ${BOLD}${BLUE}➜  http://localhost:8000${NC}"
 echo
 echo -e "  From the ${BOLD}Installation Wizard${NC} in the Control Panel you can:"
-echo -e "    • Pull the LLM model (e.g. ollama pull mistral-small:22b)"
+echo -e "    • Pull the LLM model (e.g. ollama pull llama3.2:3b)"
 echo -e "    • Configure .env (location, timezone, partners, calendar)"
 echo -e "    • Set up Google Calendar OAuth"
 echo -e "    • Pair WhatsApp via QR code"
