@@ -286,6 +286,42 @@ async function startBot() {
             lastQrString = null;  // QR no longer needed once paired
             _reconnectDelay = 3000;  // reset backoff on successful connection
             console.log('✅ House-Bot connected and ready!');
+
+            // Auto-resolve LIDs from PARTNER_PHONE if PARTNER_LID is not yet set
+            const partnerPhoneRaw = process.env.PARTNER_PHONE?.trim();
+            if (PARTNER.length === 0 && partnerPhoneRaw) {
+                const phones = partnerPhoneRaw.split(',').map(p => p.trim()).filter(Boolean);
+                const resolved = [];
+                for (const phone of phones) {
+                    try {
+                        console.log(`🔍 Resolving JID for ${phone}...`);
+                        const [result] = await localSock.onWhatsApp(phone.replace(/^\+/, ''));
+                        if (result?.exists && result.jid) {
+                            resolved.push(result.jid);
+                            console.log(`✅ Resolved: ${phone} → ${result.jid}`);
+                        } else {
+                            console.warn(`⚠️  ${phone} — not found on WhatsApp`);
+                        }
+                    } catch (err) {
+                        console.error(`❌ JID resolution failed for ${phone}:`, err.message);
+                    }
+                }
+                if (resolved.length > 0) {
+                    const envPath = path.join(__dirname, '..', '.env');
+                    let envContent = fs.readFileSync(envPath, 'utf8');
+                    const lidLine = `PARTNER_LID=${resolved.join(',')}`;
+                    if (/^PARTNER_LID=/m.test(envContent)) {
+                        envContent = envContent.replace(/^PARTNER_LID=.*$/m, lidLine);
+                    } else {
+                        envContent += `\n${lidLine}\n`;
+                    }
+                    // Clear PARTNER_PHONE now that resolution is done
+                    envContent = envContent.replace(/^PARTNER_PHONE=.*$/m, 'PARTNER_PHONE=');
+                    fs.writeFileSync(envPath, envContent, 'utf8');
+                    console.log(`💾 ${lidLine} written to .env — PARTNER_PHONE cleared`);
+                    reloadPartners();
+                }
+            }
         }
     });
 
