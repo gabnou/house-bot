@@ -295,10 +295,17 @@ async function startBot() {
                 for (const phone of phones) {
                     try {
                         console.log(`🔍 Resolving JID for ${phone}...`);
-                        const [result] = await localSock.onWhatsApp(phone.replace(/^\+/, ''));
-                        if (result?.exists && result.jid) {
-                            resolved.push(result.jid);
-                            console.log(`✅ Resolved: ${phone} → ${result.jid}`);
+                        const results = await localSock.onWhatsApp(phone.replace(/^\+/, ''));
+                        const result = results?.[0];
+                        if (result) {
+                            // Prefer LID (used in LID-addressing mode); fall back to phone-based JID
+                            const resolvedJid = result.lid || result.jid;
+                            if (resolvedJid) {
+                                resolved.push(resolvedJid);
+                                console.log(`✅ Resolved: ${phone} → ${resolvedJid} (lid: ${result.lid ?? 'n/a'}, jid: ${result.jid})`);
+                            } else {
+                                console.warn(`⚠️  ${phone} — resolved but no usable JID returned`);
+                            }
                         } else {
                             console.warn(`⚠️  ${phone} — not found on WhatsApp`);
                         }
