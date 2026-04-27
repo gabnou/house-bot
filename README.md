@@ -47,7 +47,7 @@ cd housebot-*
 ### 2 — Run the installer
 
 ```bash
-chmod 755 install.sh
+chmod 755 install.sh    # only needed if the next command doesn't work
 ./install.sh
 ```
 

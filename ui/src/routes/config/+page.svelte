@@ -1258,58 +1258,24 @@
 						</div>
 					{/if}
 
-					<!-- Embedding models -->
+					<!-- Embedding models (read-only — predefined, cannot be deleted) -->
 					{#if embedModels.length > 0}
 						<div class="space-y-2">
-							<p class="text-xs font-semibold text-surface-400-600 uppercase tracking-wide">Embedding Models</p>
+							<p class="text-xs font-semibold text-surface-400-600 uppercase tracking-wide">Embedding Model</p>
 							{#each embedModels as model}
-								{@const isDeleting = deletingModel === model.name}
-								{@const isPendingDelete = pendingDeleteModel === model.name}
 								<div class="flex items-center gap-3 p-3 rounded-lg border border-surface-200-800 bg-surface-100-900/40">
 									<div class="flex-1 min-w-0">
 										<div class="flex items-center gap-2 flex-wrap">
 											<span class="text-xs font-mono font-semibold">{model.name}</span>
 											<span class="px-1.5 py-0.5 rounded text-xs bg-tertiary-500/15 text-tertiary-400">embed</span>
+											<span class="px-1.5 py-0.5 rounded text-xs bg-surface-200-800 text-surface-400-600">predefined</span>
 										</div>
 										<p class="text-xs text-surface-400-600 mt-0.5">
 											{model.params || model.family || ''}
 											{#if model.size_gb > 0} · {model.size_gb} GB on disk{/if}
 										</p>
-										<p class="text-[10px] mt-0.5 text-surface-400-600/60">used for multilingual intent classification</p>
+										<p class="text-[10px] mt-0.5 text-surface-400-600/60">required for multilingual intent classification — cannot be removed</p>
 									</div>
-									<!-- Delete controls -->
-									{#if isPendingDelete}
-										<div class="flex flex-col items-end gap-1.5 shrink-0">
-											<div class="flex items-center gap-2">
-												<span class="text-xs text-error-400">Delete?</span>
-												<button
-													onclick={() => deleteModel(model.name)}
-													disabled={isDeleting}
-													class="px-2 py-1 rounded text-xs font-medium bg-error-500/20 text-error-400
-													hover:bg-error-500/30 border border-error-500/40 transition-colors disabled:opacity-40"
-												>Yes</button>
-												<button
-													onclick={() => pendingDeleteModel = null}
-													class="px-2 py-1 rounded text-xs font-medium border border-surface-300-700
-													text-surface-500-500 hover:bg-surface-100-900 transition-colors"
-												>No</button>
-											</div>
-										</div>
-									{:else}
-										<div class="flex items-center gap-1 shrink-0">
-											<button
-												onclick={() => pendingDeleteModel = model.name}
-												disabled={isDeleting || !!deletingModel || !!loadingModel}
-												title="Remove model from local disk"
-												class="flex flex-col items-center px-2 py-1 rounded-lg border border-surface-300-700
-												text-surface-500-500 hover:border-error-500/40 hover:text-error-400 hover:bg-error-500/5
-												transition-colors disabled:opacity-40"
-											>
-												<span class="text-xs leading-none">{isDeleting ? '…' : '🗑'}</span>
-												<span class="text-[9px] leading-none mt-0.5">delete</span>
-											</button>
-										</div>
-									{/if}
 								</div>
 							{/each}
 						</div>
