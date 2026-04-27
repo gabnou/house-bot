@@ -267,7 +267,7 @@ def _parse_raw(raw: str) -> dict:
     return json.loads(match.group())
 
 
-def detect_language(text: str) -> dict:
+def detect_language(text: str, sender_name: str = "") -> dict:
     """Ask the LLM to detect the language of a message.
     Returns {"language": "...", "confidence": "high"|"medium"|"low"} or None on error."""
     ctx = get_user_context()
@@ -277,13 +277,14 @@ def detect_language(text: str) -> dict:
             f"\nUser language preference: The user's primary language is {ctx['language']}. "
             f"When the text is ambiguous between {ctx['language']} and a similar language, prefer {ctx['language']}."
         )
+    sender_hint = f"\nSender: {sender_name}" if sender_name else ""
     prompt = (
         "Detect the language of the following text. "
         "Respond ONLY with a valid JSON object with two fields:\n"
         '- "language": the full English name of the language (e.g. "Spanish", "Italian", "French", "German").\n'
         '- "confidence": "high", "medium", or "low".\n'
         "If the text is in English, respond with {\"language\": \"English\", \"confidence\": \"high\"}.\n\n"
-        f"{lang_hint}\nText: \"{text}\"\nResponse:"
+        f"{lang_hint}{sender_hint}\nText: \"{text}\"\nResponse:"
     )
     try:
         response = requests.post(OLLAMA_URL, json={
@@ -300,13 +301,14 @@ def detect_language(text: str) -> dict:
         return None
 
 
-def translate_to_english(text: str, source_language: str) -> str | None:
+def translate_to_english(text: str, source_language: str, sender_name: str = "") -> str | None:
     """Translate text from a detected language to English using the LLM."""
     ctx = get_user_context()
     user_rules = ""
     if ctx and ctx.get("instructions", "").strip():
+        sender_line = f"Sender: {sender_name}\n" if sender_name else ""
         user_rules = (
-            f"\nUser-defined rules (follow these when translating):\n{ctx['instructions'].strip()}\n"
+            f"\nUser-defined rules (follow these when translating):\n{sender_line}{ctx['instructions'].strip()}\n"
         )
     prompt = (
         f"Translate the following {source_language} text to English. "
@@ -331,13 +333,14 @@ def translate_to_english(text: str, source_language: str) -> str | None:
         return None
 
 
-def translate_from_english(text: str, target_language: str) -> str | None:
+def translate_from_english(text: str, target_language: str, sender_name: str = "") -> str | None:
     """Translate an English response to the target language using the LLM."""
     ctx = get_user_context()
     user_rules = ""
     if ctx and ctx.get("instructions", "").strip():
+        sender_line = f"Sender: {sender_name}\n" if sender_name else ""
         user_rules = (
-            f"\nUser-defined rules (follow these when translating):\n{ctx['instructions'].strip()}\n"
+            f"\nUser-defined rules (follow these when translating):\n{sender_line}{ctx['instructions'].strip()}\n"
         )
     prompt = (
         f"Translate the following English text to {target_language}. "
@@ -386,16 +389,17 @@ def validate_transcription(text: str) -> bool:
         return True
 
 
-def parse_intent(text: str) -> dict:
+def parse_intent(text: str, sender_name: str = "") -> dict:
     from skills.registry import get_prompt
     category = detect_category(text)
     prompt_fn = get_prompt(category) if category else None
     base_prompt = prompt_fn() if prompt_fn else get_system_prompt()
     ctx = get_user_context()
     if ctx and ctx.get("instructions", "").strip():
+        sender_line = f"Sender: {sender_name}\n" if sender_name else ""
         ctx_block = (
             f"\n[User-defined context — always follow these instructions]\n"
-            f"{ctx['instructions'].strip()}\n"
+            f"{sender_line}{ctx['instructions'].strip()}\n"
         )
         prompt_text = f"{base_prompt}{ctx_block}\nMessage: \"{text}\"\nResponse:"
     else:

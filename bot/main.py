@@ -40,6 +40,13 @@ PARTNER = [
     if entry.strip()
 ]
 
+# Map JID → display name (e.g. "93119253061741@lid" → "gab")
+PARTNER_NAME_MAP: dict[str, str] = {}
+for _entry in os.getenv("PARTNER_LID", "").split(","):
+    _parts = _entry.strip().split(":")
+    if len(_parts) >= 2:
+        PARTNER_NAME_MAP[_parts[0].strip()] = _parts[1].strip()
+
 # Regex patterns for identity and help — the only domain-independent intents
 # safe to short-circuit without LLM. All domain-specific patterns (shopping,
 # calendar, weather) are handled by parse_intent() to avoid cross-domain mismatches.
@@ -153,6 +160,8 @@ async def handle_message(msg: Message):
     text = msg.text.strip()
     if not text:
         return {"reply": None, "notification": None}
+    # Resolve sender JID to display name if available
+    sender_name = PARTNER_NAME_MAP.get(msg.sender, "")
     logger.debug("🔍 Received text: '%s'", text)
     # Try fast intent detection first — no language overhead for keyword messages
     intent = pre_route(text)
@@ -163,13 +172,13 @@ async def handle_message(msg: Message):
         logger.debug("⚡ pre_route match: %s", intent)
     else:
         # Detect language before sending to LLM
-        lang_info = detect_language(text)
+        lang_info = detect_language(text, sender_name=sender_name)
         lang = lang_info.get("language", "").strip() if lang_info else ""
         confidence = lang_info.get("confidence", "low").strip().lower() if lang_info else "low"
 
         if lang and lang.lower() != "english" and confidence in ("high", "medium"):
             logger.info("🌐 Detected language: %s (%s confidence) — translating...", lang, confidence)
-            translated = translate_to_english(text, lang)
+            translated = translate_to_english(text, lang, sender_name=sender_name)
             if translated:
                 logger.info("🌐 Translated to English: %s", translated)
                 detected_lang = lang
@@ -190,7 +199,7 @@ async def handle_message(msg: Message):
 
             from intent_parser import MODEL as _active_model
             logger.debug("🤖 Sending to Ollama (%s): '%s'", _active_model, effective_text)
-            intent = parse_intent(effective_text)
+            intent = parse_intent(effective_text, sender_name=sender_name)
 
     action = intent.get("action", "unknown")
     t1 = time.time()
@@ -265,7 +274,7 @@ async def handle_message(msg: Message):
 
     # Translate reply back if the original message was in a foreign language
     if detected_lang and reply:
-        translated_reply = translate_from_english(reply, detected_lang)
+        translated_reply = translate_from_english(reply, detected_lang, sender_name=sender_name)
         if translated_reply:
             reply = translated_reply
         else:
