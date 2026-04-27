@@ -303,6 +303,11 @@ async function startBot() {
                 console.log(`⏭️  Skipped — group message`);
                 continue;
             }
+            // Broadcast lists ([timestamp]@broadcast) and Status/Stories (status@broadcast)
+            if (remoteJid?.endsWith('@broadcast')) {
+                console.log(`⏭️  Skipped — broadcast/status message`);
+                continue;
+            }
             // Allow fromMe messages only when the remoteJid is a configured partner
             // (personal-number mode: user sends to themselves / Saved Messages)
             if (fromMe && !PARTNER.includes(remoteJid)) {
