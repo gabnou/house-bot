@@ -31,6 +31,7 @@ let sock = null;
 let isConnected = false;
 let isRestarting = false;
 let lastQrString = null;
+let _reconnectDelay = 3000;  // starts at 3s, backs off exponentially up to 60s
 
 // ── Async message queue ──────────────────────────────────────────────────────
 // The WA event handler pushes here and returns immediately; drainQueue()
@@ -206,20 +207,23 @@ async function sendReply(jid, text) {
     }
 }
 
-function scheduleRestart(delayMs = 3000) {
+function scheduleRestart(delayMs) {
     if (isRestarting) {
         console.log('⚠️ Reconnection already in progress, skipping.');
         return;
     }
+    // Use exponential backoff if no explicit delay is provided
+    const delay = delayMs !== undefined ? delayMs : _reconnectDelay;
+    _reconnectDelay = Math.min(_reconnectDelay * 2, 60000);
     isRestarting = true;
     sock = null;
     isConnected = false;
     _sendChain = Promise.resolve();
-    console.log(`🔄 Reconnecting in ${delayMs / 1000}s...`);
+    console.log(`🔄 Reconnecting in ${delay / 1000}s...`);
     setTimeout(() => {
         isRestarting = false;
         startBot();
-    }, delayMs);
+    }, delay);
 }
 
 async function startBot() {
@@ -236,6 +240,8 @@ async function startBot() {
         logger: pino({ level: 'silent' }),
         browser: [appName, 'Chrome', '1.0.0'],
         connectTimeoutMs: 60000,
+        keepAliveIntervalMs: 25000,
+        defaultQueryTimeoutMs: undefined,
         retryRequestDelayMs: 2000,
         getMessage: async () => ({ conversation: '' }),
     });
@@ -278,6 +284,7 @@ async function startBot() {
         if (connection === 'open') {
             isConnected = true;
             lastQrString = null;  // QR no longer needed once paired
+            _reconnectDelay = 3000;  // reset backoff on successful connection
             console.log('✅ House-Bot connected and ready!');
         }
     });
