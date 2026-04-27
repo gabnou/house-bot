@@ -18,7 +18,7 @@ _USER_CONTEXT_FILE = os.path.join(os.path.dirname(__file__), "user_context.json"
 def get_user_context() -> dict | None:
     """Load user-defined behavioural context (preferred language + custom instructions).
 
-    Returns the stored dict only when non-empty instructions are present.
+    Returns the stored dict when either language or instructions is non-empty.
     Reads from disk each call so changes saved via the Admin API take effect
     on the next message without requiring a restart.
     """
@@ -26,7 +26,7 @@ def get_user_context() -> dict | None:
         if os.path.exists(_USER_CONTEXT_FILE):
             with open(_USER_CONTEXT_FILE, encoding="utf-8") as f:
                 data = json.load(f)
-            if data.get("instructions", "").strip():
+            if data.get("language", "").strip() or data.get("instructions", "").strip():
                 return data
     except Exception:
         pass

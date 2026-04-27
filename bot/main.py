@@ -250,14 +250,13 @@ async def handle_message(msg: Message):
                     "  move doctor visit from April 5th to April 6th at 11am\n\n"
                 )
             case _:
-                llm_reply = intent.get("reply", "I couldn't understand, please try again!")
+                llm_reply = intent.get("reply", "I couldn't understand that, please try again!")
                 reply = (
-                    "🤖 I didn't understand what you mean and I answer:\n"
-                    f"{llm_reply}\n"
-                    "🤖 I can help you with:\n"
+                    f"🤖 {llm_reply}\n\n"
+                    "I can help you with:\n"
                     "🛒 Shopping list\n"
                     "🌤️ Weather forecasts\n"
-                    "📅 Google Calendar\n\n"    
+                    "📅 Google Calendar\n\n"
                 )
 
     t2 = time.time()
