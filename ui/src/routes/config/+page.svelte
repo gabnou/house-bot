@@ -1010,7 +1010,7 @@
 
 	// ── Back / incomplete-warning logic ─────────────────────────────────────────
 	const STEPS = [
-		{ label: 'Ollama — AI Models',       done: () => step1Done },
+		{ label: 'Private AI Configuration (Ollama models)', done: () => step1Done },
 		{ label: 'WhatsApp Pairing',         done: () => step3Done },
 		{ label: 'Sender Restrictions',      done: () => step4Done },
 		{ label: 'Location & Briefing',      done: () => step5Done },
@@ -1099,7 +1099,10 @@
 					🤖
 				</div>
 				<div class="flex-1 min-w-0">
-					<p class="font-semibold text-sm">Bot display name</p>
+					<p class="font-semibold text-sm">
+						<span class="text-surface-400-600 font-mono text-xs mr-2">0.</span>
+						Bot display name
+					</p>
 					<p class="text-xs text-surface-400-600 mt-0.5">
 						{waAppName ? waAppName : 'Not set'} · Name shown in WhatsApp's linked devices list.
 					</p>
@@ -1139,7 +1142,7 @@
 			{/if}
 		</div>
 
-		<!-- ── Step 1: Ollama — AI Models (interactive) ──────────────────────────── -->
+		<!-- ── Step 1: Private AI Configuration (Ollama models) ─────────────────── -->
 		<div class="card bg-surface-50-950 border border-surface-200-800 rounded-xl">
 
 			<!-- Accordion header -->
@@ -1153,7 +1156,7 @@
 				<div class="flex-1 min-w-0">
 					<p class="font-semibold text-sm">
 						<span class="text-surface-400-600 font-mono text-xs mr-2">1.</span>
-						Ollama — AI Models
+						Private AI Configuration (Ollama models)
 					</p>
 					<p class="text-xs text-surface-400-600 mt-0.5">Select and pull a local LLM model to power the bot.</p>
 				</div>
