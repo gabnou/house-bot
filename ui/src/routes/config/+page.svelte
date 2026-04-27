@@ -141,6 +141,7 @@
 		'gemma3:4b':         8,
 		'gemma3:12b':        18,
 		'gemma3:27b':        40,
+		'llama3.2:3b':        5,
 		'llama3.1:8b':       12,
 		'mistral-small:22b': 28,
 	};

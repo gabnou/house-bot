@@ -200,7 +200,7 @@ def _llm_reassign_deleted_category(items: list, categories: list) -> dict:
 
     import requests as _req
     ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
-    model = os.getenv("OLLAMA_MODEL", "mistral-small:22b")
+    model = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
 
     # Try to import the live in-memory model name
     try:

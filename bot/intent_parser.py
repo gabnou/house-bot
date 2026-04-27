@@ -31,7 +31,7 @@ def get_user_context() -> dict | None:
     except Exception:
         pass
     return None
-MODEL = os.getenv("OLLAMA_MODEL", "mistral-small:22b")
+MODEL = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
 EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text:latest")
 _OLLAMA_BASE = OLLAMA_URL.rsplit("/api/", 1)[0]
 EMBED_URL = f"{_OLLAMA_BASE}/api/embeddings"

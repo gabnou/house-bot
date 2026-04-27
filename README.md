@@ -60,7 +60,7 @@ When the installer finishes, open **[http://localhost:8000](http://localhost:800
 | Section | What you do |
 |---|---|
 | **0. Bot display name** | Choose the name the bot will show on WhatsApp |
-| **1. Private AI Configuration (Ollama models)** | Pick and download a local AI model. Lighter models (8B) work on 8 GB RAM; bigger ones (22B) need 16 GB+. |
+| **1. Private AI Configuration (Ollama models)** | Pick and download a local AI model. The default (`llama3.2:3b`) works on any Mac with 8 GB RAM. Bigger models (8B+) give better results but need more memory. |
 | **2. WhatsApp Pairing** | Scan a QR code to link the bot's WhatsApp number |
 | **3. Sender Restrictions** | Send a message from each household member's phone, then approve them here |
 | **4. Location & Briefing** | Set your city for weather and choose the morning briefing language |
