@@ -1,0 +1,185 @@
+[
+  {
+    "id": "shopping_add_multi",
+    "section": "Shopping",
+    "message": "add milk and eggs",
+    "expect_contains": [
+      "milk",
+      "eggs"
+    ],
+    "skip_in_test_mode": true,
+    "destructive": true,
+    "note": "adds multiple items to the shopping list"
+  },
+  {
+    "id": "shopping_add_single",
+    "section": "Shopping",
+    "message": "add ibuprofen",
+    "expect_contains": [
+      "ibuprofen"
+    ],
+    "skip_in_test_mode": true,
+    "destructive": true,
+    "note": "adds a single health item"
+  },
+  {
+    "id": "shopping_show",
+    "section": "Shopping",
+    "message": "what's missing?",
+    "expect_contains": [],
+    "skip_in_test_mode": true,
+    "destructive": false,
+    "note": "shows the current shopping list"
+  },
+  {
+    "id": "shopping_bought",
+    "section": "Shopping",
+    "message": "I bought apples",
+    "expect_contains": [],
+    "skip_in_test_mode": true,
+    "destructive": true,
+    "note": "marks an item as bought (adds it first if not present)"
+  },
+  {
+    "id": "shopping_remove",
+    "section": "Shopping",
+    "message": "remove pasta",
+    "expect_contains": [],
+    "skip_in_test_mode": true,
+    "destructive": true,
+    "note": "removes an item from the shopping list"
+  },
+  {
+    "id": "shopping_clear",
+    "section": "Shopping",
+    "message": "clear the list",
+    "expect_contains": [],
+    "skip_in_test_mode": true,
+    "destructive": true,
+    "note": "clears the entire shopping list"
+  },
+  {
+    "id": "weather_now",
+    "section": "Weather",
+    "message": "weather now",
+    "expect_contains": [],
+    "skip_in_test_mode": false,
+    "destructive": false,
+    "note": "current weather conditions"
+  },
+  {
+    "id": "weather_tomorrow",
+    "section": "Weather",
+    "message": "weather tomorrow",
+    "expect_contains": [],
+    "skip_in_test_mode": true,
+    "destructive": false,
+    "note": "weather forecast for tomorrow"
+  },
+  {
+    "id": "weather_4days",
+    "section": "Weather",
+    "message": "weather next 4 days",
+    "expect_contains": [],
+    "skip_in_test_mode": true,
+    "destructive": false,
+    "note": "multi-day weather forecast"
+  },
+  {
+    "id": "weather_city",
+    "section": "Weather",
+    "message": "weather next 3 days in Madrid",
+    "expect_contains": [
+      "Madrid"
+    ],
+    "skip_in_test_mode": true,
+    "destructive": false,
+    "note": "forecast for a named city"
+  },
+  {
+    "id": "weather_hours_city",
+    "section": "Weather",
+    "message": "weather next 6 hours in Lecce",
+    "expect_contains": [
+      "Lecce"
+    ],
+    "skip_in_test_mode": true,
+    "destructive": false,
+    "note": "hourly forecast for a named city"
+  },
+  {
+    "id": "calendar_today",
+    "section": "Calendar",
+    "message": "what do I have today?",
+    "expect_contains": [],
+    "skip_in_test_mode": true,
+    "destructive": false,
+    "note": "calendar read — requires Google Calendar to be configured"
+  },
+  {
+    "id": "calendar_week",
+    "section": "Calendar",
+    "message": "this week",
+    "expect_contains": [],
+    "skip_in_test_mode": true,
+    "destructive": false,
+    "note": "calendar read — requires Google Calendar to be configured"
+  },
+  {
+    "id": "calendar_month",
+    "section": "Calendar",
+    "message": "events in April",
+    "expect_contains": [],
+    "skip_in_test_mode": true,
+    "destructive": false,
+    "note": "calendar read — requires Google Calendar to be configured"
+  },
+  {
+    "id": "calendar_add",
+    "section": "Calendar",
+    "message": "add dinner with Mario Friday at 9pm",
+    "expect_contains": [],
+    "skip_in_test_mode": true,
+    "destructive": true,
+    "note": "calendar write — skipped to avoid modifying your real calendar"
+  },
+  {
+    "id": "calendar_delete",
+    "section": "Calendar",
+    "message": "delete dinner with Mario",
+    "expect_contains": [],
+    "skip_in_test_mode": true,
+    "destructive": true,
+    "note": "calendar write — skipped to avoid modifying your real calendar"
+  },
+  {
+    "id": "calendar_edit",
+    "section": "Calendar",
+    "message": "move doctor visit to April 6th at 11am",
+    "expect_contains": [],
+    "skip_in_test_mode": true,
+    "destructive": true,
+    "note": "calendar write — skipped to avoid modifying your real calendar"
+  },
+  {
+    "id": "special_help",
+    "section": "Special",
+    "message": "help",
+    "expect_contains": [
+      "shopping",
+      "weather"
+    ],
+    "skip_in_test_mode": false,
+    "destructive": false,
+    "note": "help command — must list shopping and weather"
+  },
+  {
+    "id": "special_identity",
+    "section": "Special",
+    "message": "who are you",
+    "expect_contains": [],
+    "skip_in_test_mode": false,
+    "destructive": false,
+    "note": "identity command — bot introduces itself"
+  }
+]

@@ -54,6 +54,7 @@
 			{ href: '/admin',   icon: '🔧', label: 'Admin',             desc: 'Manage your housebot services' },
 			{ href: '/status',  icon: '⚡', label: 'Status',            desc: 'Live health + logs' },
 			{ href: '/prompts', icon: '✏️',  label: 'Prompting',         desc: 'Customize your housebot behaviours' },
+			{ href: '/testing', icon: '🧪', label: 'Testing',           desc: 'Run test cases against the bot' },
 		] as link}
 			<a
 				href={link.href}

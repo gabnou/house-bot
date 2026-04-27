@@ -34,14 +34,13 @@ Your home assistant on WhatsApp — manage a shared shopping list, keep your Goo
 
 ### 1 — Download the latest release
 
-Go to the [Releases page](https://github.com/gabnou/house-bot/releases/latest), download the **`housebot-<version>.zip`** file (not "Source code"), and save it somewhere easy to find — for example your Desktop or Downloads folder.
-
-Then open the **Terminal** app (press `⌘ Space`, type *Terminal*, press Enter) and run these commands — replacing the path with wherever you saved the zip:
+Open the **Terminal** app (press `⌘ Space`, type *Terminal*, press Enter) and run:
 
 ```bash
-cd ~/Downloads          # or wherever you saved the zip, e.g. cd ~/Desktop
-unzip housebot-*.zip
-cd housebot-*
+cd ~/Downloads             # or wherever you want to install it, e.g. cd ~/Desktop
+mkdir housebot && cd housebot
+curl -L -o housebot.zip https://github.com/gabnou/house-bot/releases/latest/download/housebot.zip
+unzip housebot.zip
 ```
 
 ### 2 — Run the installer

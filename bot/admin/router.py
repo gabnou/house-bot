@@ -2193,3 +2193,159 @@ async def save_location_settings(req: LocationSettingsRequest):
     logger.info("✅ Location settings saved: %s (%.4f, %.4f) tz=%s lang=%s",
                 city, req.latitude, req.longitude, timezone, lang)
     return JSONResponse(content={"ok": True})
+
+
+# ── Test Suite ────────────────────────────────────────────────────────────────
+
+_TEST_CASES_FILE = _PROJECT_ROOT / "bot" / "tests" / "test_cases.json"
+_test_run_lock = threading.Lock()
+
+
+@router.get("/test/cases")
+async def get_test_cases():
+    """Return the test suite from bot/tests/test_cases.json."""
+    if not _TEST_CASES_FILE.exists():
+        return JSONResponse(content=[])
+    return JSONResponse(content=json.loads(_TEST_CASES_FILE.read_text(encoding="utf-8")))
+
+
+class TestCasesUpdateRequest(BaseModel):
+    cases: list
+
+
+@router.put("/test/cases")
+async def update_test_cases(req: TestCasesUpdateRequest):
+    """Overwrite the full test suite."""
+    _TEST_CASES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _TEST_CASES_FILE.write_text(
+        json.dumps(req.cases, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return JSONResponse(content={"ok": True, "count": len(req.cases)})
+
+
+@router.post("/test/run")
+async def run_test_suite():
+    """
+    Run the full test suite as a Server-Sent Events stream.
+
+    Before running, clones the production shopping DB to a temp file and
+    redirects all shopping DB connections to the clone for the duration of
+    the run. The clone is deleted when the run finishes.
+
+    Event types:
+      {"type": "start",  "total": N}
+      {"type": "result", "id": "...", "status": "pass|fail|skip|warn",
+                         "section": "...", "message": "...", "reply": "...", "note": "..."}
+      {"type": "done",   "passed": N, "failed": N, "skipped": N, "warned": N}
+      {"type": "error",  "detail": "..."}
+    """
+    import shutil
+    import tempfile
+    import asyncio
+    import requests as _req
+
+    if not _TEST_CASES_FILE.exists():
+        raise HTTPException(status_code=404, detail="test_cases.json not found")
+
+    if not _test_run_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="A test run is already in progress")
+
+    cases = json.loads(_TEST_CASES_FILE.read_text(encoding="utf-8"))
+
+    async def _stream():
+        import services.shopping_db as _sdb
+        tmp_db_path = None
+        try:
+            # Clone the production DB so shopping writes don't affect real data.
+            fd, tmp_db_path = tempfile.mkstemp(suffix=".db", prefix="housebot_test_")
+            os.close(fd)
+            if _sdb.DB_PATH.exists():
+                shutil.copy2(str(_sdb.DB_PATH), tmp_db_path)
+            _sdb._test_db_path = Path(tmp_db_path)
+            logger.info("🧪 Test run started — using cloned DB at %s", tmp_db_path)
+
+            total = len(cases)
+            yield f"data: {json.dumps({'type': 'start', 'total': total})}\n\n"
+
+            passed = failed = skipped = warned = 0
+
+            for case in cases:
+                cid     = case.get("id", "?")
+                section = case.get("section", "")
+                message = case.get("message", "")
+                expect  = [e.lower() for e in case.get("expect_contains", [])]
+                skip    = case.get("skip_in_test_mode", False)
+                note    = case.get("note", "")
+
+                if skip:
+                    skipped += 1
+                    yield f"data: {json.dumps({'type': 'result', 'id': cid, 'status': 'skip', 'section': section, 'message': message, 'reply': '', 'note': note})}\n\n"
+                    continue
+
+                # Calendar reads: soft warning on failure (Google Calendar may not be set up)
+                is_cal_read = section == "Calendar" and not case.get("destructive", False)
+
+                try:
+                    resp = await asyncio.to_thread(
+                        lambda msg=message: _req.post(
+                            "http://localhost:8000/message",
+                            json={"text": msg, "sender": "__test__"},
+                            timeout=90,
+                        )
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    reply = (data.get("reply") or "").strip()
+
+                    if not reply:
+                        status = "warn" if is_cal_read else "fail"
+                        detail = "(empty reply — Google Calendar may not be configured)" if is_cal_read else "(empty reply)"
+                        if status == "fail":
+                            failed += 1
+                        else:
+                            warned += 1
+                    elif expect and not all(e in reply.lower() for e in expect):
+                        missing = [e for e in expect if e not in reply.lower()]
+                        status = "fail"
+                        failed += 1
+                        detail = f"(expected in reply: {', '.join(missing)})\n{reply[:200]}"
+                    else:
+                        status = "pass"
+                        passed += 1
+                        detail = reply[:200] + ("…" if len(reply) > 200 else "")
+
+                except Exception as exc:
+                    status = "warn" if is_cal_read else "fail"
+                    if status == "fail":
+                        failed += 1
+                    else:
+                        warned += 1
+                    detail = str(exc)
+
+                yield f"data: {json.dumps({'type': 'result', 'id': cid, 'status': status, 'section': section, 'message': message, 'reply': detail, 'note': note})}\n\n"
+                await asyncio.sleep(2)
+
+            yield f"data: {json.dumps({'type': 'done', 'passed': passed, 'failed': failed, 'skipped': skipped, 'warned': warned})}\n\n"
+            logger.info("🧪 Test run complete — passed=%d failed=%d skipped=%d warned=%d", passed, failed, skipped, warned)
+
+        except Exception as exc:
+            logger.exception("🧪 Test run error: %s", exc)
+            yield f"data: {json.dumps({'type': 'error', 'detail': str(exc)})}\n\n"
+
+        finally:
+            import services.shopping_db as _sdb
+            _sdb._test_db_path = None
+            if tmp_db_path and Path(tmp_db_path).exists():
+                try:
+                    Path(tmp_db_path).unlink()
+                except Exception:
+                    pass
+            _test_run_lock.release()
+            logger.info("🧪 Test DB clone removed, lock released")
+
+    return StreamingResponse(
+        _stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

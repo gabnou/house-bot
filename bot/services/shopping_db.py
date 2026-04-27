@@ -7,6 +7,10 @@ logger = logging.getLogger(__name__)
 DB_PATH = Path(__file__).parent / "db" / "shoppinglist.db"
 SCHEMA_PATH = Path(__file__).parent / "db" / "shoppinglist_schema.sql"
 
+# When set by the test runner, all connections use this path instead of DB_PATH.
+# This is a module-level override — safe for the single-user local bot.
+_test_db_path: Path | None = None
+
 BUILTIN_CATEGORIES = {'food', 'other', 'clothing', 'health'}
 
 CATEGORY_EMOJI = {
@@ -31,7 +35,7 @@ def get_known_categories() -> list:
 
 
 def get_conn():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(_test_db_path if _test_db_path is not None else DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
