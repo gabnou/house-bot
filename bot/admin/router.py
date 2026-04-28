@@ -635,6 +635,7 @@ async def ollama_upgrade():
 # ── HouseBot Software Update ─────────────────────────────────────────────────
 
 _GITHUB_REPO = "gabnou/house-bot"
+_GITHUB_RELEASES_REPO = "gabnou/house-bot-releases"
 _RELEASE_FILE = _PROJECT_ROOT / "release.json"
 
 
@@ -734,19 +735,22 @@ async def housebot_upgrade():
             return JSONResponse(content={"ok": False, "message": "Upgrade already in progress."})
         _hb_upgrade_state.update({"status": "running", "log": [], "exit_code": None})
 
-    # Resolve the latest release from GitHub (releases only)
+    # Resolve the latest release from the house-bot-releases repo and use housebot.zip asset
     latest_tag: str | None = None
     zipball_url: str | None = None
     try:
         r = _req.get(
-            f"https://api.github.com/repos/{_GITHUB_REPO}/releases/latest",
+            f"https://api.github.com/repos/{_GITHUB_RELEASES_REPO}/releases/latest",
             headers={"Accept": "application/vnd.github.v3+json"},
             timeout=8,
         )
         if r.status_code == 200:
             release = r.json()
             latest_tag = release.get("tag_name") or None
-            zipball_url = release.get("zipball_url") or None
+            # Prefer the attached housebot.zip asset; fall back to zipball_url
+            assets = release.get("assets", [])
+            asset = next((a for a in assets if a.get("name") == "housebot.zip"), None)
+            zipball_url = asset["browser_download_url"] if asset else release.get("zipball_url") or None
     except Exception:
         pass
 
