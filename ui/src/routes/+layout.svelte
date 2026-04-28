@@ -138,8 +138,7 @@
 				<img src={isDark ? '/housebot_logo_v2_dark_small.png' : '/housebot_logo_v2_small.png'} alt="Home" class="h-9 w-auto opacity-80 hover:opacity-100 transition-opacity" />
 			</a>
 			<p class="ml-4 text-sm text-surface-400-600">
-				Domestic WhatsApp bot — shopping list, weather, and Google Calendar.
-				Runs entirely locally with Ollama + faster-whisper.
+				housebot, your smart family assistant. private AI. running on your computer.
 			</p>
 		</header>
 		{/if}
