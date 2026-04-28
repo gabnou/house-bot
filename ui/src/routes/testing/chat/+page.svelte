@@ -8,6 +8,7 @@
 		botReply: string | null;
 		pending: boolean;
 		rating: 'acceptable' | 'wrong' | null;
+		duration: number | null; // ms
 	}
 
 	// ── State ──────────────────────────────────────────────────────────────
@@ -90,8 +91,9 @@
 		sendError = null;
 		sending = true;
 
-		const entry: Exchange = { id: nextId++, userMsg: text, botReply: null, pending: true, rating: null };
+		const entry: Exchange = { id: nextId++, userMsg: text, botReply: null, pending: true, rating: null, duration: null };
 		exchanges = [...exchanges, entry];
+		const t0 = Date.now();
 
 		try {
 			const body: Record<string, unknown> = { text, sender: '__manual_test__' };
@@ -103,13 +105,14 @@
 			});
 			if (!res.ok) throw new Error(`HTTP ${res.status}`);
 			const data = await res.json();
+			const elapsed = Date.now() - t0;
 			exchanges = exchanges.map(e =>
-				e.id === entry.id ? { ...e, botReply: (data.reply ?? '(no reply)').trim(), pending: false } : e
+				e.id === entry.id ? { ...e, botReply: (data.reply ?? '(no reply)').trim(), pending: false, duration: elapsed } : e
 			);
 		} catch (err) {
 			sendError = err instanceof Error ? err.message : String(err);
 			exchanges = exchanges.map(e =>
-				e.id === entry.id ? { ...e, botReply: '⚠ Error — bot unreachable', pending: false } : e
+				e.id === entry.id ? { ...e, botReply: '⚠ Error — bot unreachable', pending: false, duration: Date.now() - t0 } : e
 			);
 		} finally {
 			sending = false;
@@ -175,6 +178,17 @@
 		</div>
 	</div>
 
+	<!-- Language card (read-only) -->
+	<div class="rounded-xl border border-surface-200-800 px-4 py-3 flex items-center gap-3 bg-surface-50-950">
+		<span class="text-xs font-semibold text-surface-500 uppercase shrink-0">Language</span>
+		{#if loadingContext}
+		<span class="text-xs text-surface-400-600 animate-pulse">Loading…</span>
+		{:else}
+		<span class="px-3 py-1 text-sm rounded-lg border border-surface-200-800 bg-surface-100-900 text-surface-600-400 select-none">{productionLanguage || '—'}</span>
+		<span class="text-xs text-surface-400-600">Set in <a href="/config" class="underline hover:text-primary-500 transition-colors">Config / Location</a></span>
+		{/if}
+	</div>
+
 	<!-- User Context panel -->
 	<div class="rounded-xl border border-surface-200-800 overflow-hidden">
 		<button
@@ -200,18 +214,7 @@
 			{#if loadingContext}
 			<p class="text-xs text-surface-400-600 animate-pulse py-2">Loading user context…</p>
 			{:else}
-			<p class="text-xs text-surface-400-600">Instructions can be edited for this test session. Language is always the one set in your configuration and cannot be changed here.</p>
-
-			<!-- Language (read-only) -->
-			<div class="flex flex-col gap-1">
-				<span class="text-xs font-semibold text-surface-500 uppercase">Language</span>
-				<div class="flex items-center gap-2">
-					<span class="px-3 py-1.5 text-sm rounded-lg border border-surface-200-800 bg-surface-100-900 text-surface-600-400 select-none">
-						{productionLanguage || '—'}
-					</span>
-					<span class="text-xs text-surface-400-600">Set in <a href="/config" class="underline hover:text-primary-500 transition-colors">Config / Location</a></span>
-				</div>
-			</div>
+			<p class="text-xs text-surface-400-600">Instructions can be edited for this test session only — production settings are never modified unless you explicitly save them.</p>
 
 			<!-- Instructions (full width) -->
 			<label class="flex flex-col gap-1">
@@ -265,26 +268,51 @@
 		{/if}
 	</div>
 
-	<!-- Chat history -->
+	<!-- Input bar -->
+	<div class="flex gap-2 items-end">
+		<textarea
+			bind:value={input}
+			onkeydown={onKeydown}
+			disabled={sending}
+			rows={2}
+			placeholder="Type a message… (Enter to send, Shift+Enter for new line)"
+			class="flex-1 px-4 py-2.5 text-sm rounded-xl border border-surface-300-700 bg-white dark:bg-gray-900 resize-none focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 transition-colors"
+		></textarea>
+		<button
+			onclick={send}
+			disabled={!input.trim() || sending}
+			class="px-4 py-2.5 text-sm font-semibold rounded-xl bg-primary-500 hover:bg-primary-600 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors shrink-0"
+		>Send</button>
+	</div>
+
+	{#if sendError}
+	<div class="p-3 rounded-xl bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-sm text-red-700 dark:text-red-300">
+		{sendError}
+	</div>
+	{/if}
+
 	{#if exchanges.length > 0}
 	<div class="flex flex-col gap-4">
-		{#each exchanges as ex (ex.id)}
+		{#each [...exchanges].reverse() as ex (ex.id)}
 
 		<!-- User message -->
 		<div class="flex justify-end">
-			<div class="max-w-[75%] px-4 py-2.5 rounded-2xl rounded-br-sm bg-primary-500 text-white text-sm">
+			<div class="max-w-[75%] px-4 py-2.5 rounded-2xl rounded-br-sm bg-primary-500 text-white text-xs">
 				{ex.userMsg}
 			</div>
 		</div>
 
 		<!-- Bot reply -->
-		<div class="flex flex-col gap-2">
+		<div class="flex flex-col gap-1">
 			<div class="flex items-end gap-2">
-				<div class="max-w-[75%] px-4 py-2.5 rounded-2xl rounded-bl-sm bg-surface-100-900 text-sm
-					{ex.pending ? 'animate-pulse text-surface-400-600' : ''}">
+				<div class="max-w-[75%] px-4 py-2.5 rounded-2xl rounded-bl-sm bg-surface-100-900 text-xs
+					{ex.pending ? 'animate-pulse text-surface-400-600' : 'whitespace-pre-wrap'}">
 					{#if ex.pending}Typing…{:else}{ex.botReply}{/if}
 				</div>
 			</div>
+			{#if !ex.pending && ex.duration !== null}
+			<span class="pl-1 text-[10px] text-surface-400-600">{(ex.duration / 1000).toFixed(1)} s</span>
+			{/if}
 
 			<!-- Rating buttons -->
 			{#if !ex.pending && ex.rating === null}
@@ -313,32 +341,6 @@
 		{/each}
 	</div>
 	{:else}
-	<div class="text-center py-4 text-surface-400-600 text-sm">
-		Send a message to the bot.
-	</div>
 	{/if}
-
-	{#if sendError}
-	<div class="p-3 rounded-xl bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-sm text-red-700 dark:text-red-300">
-		{sendError}
-	</div>
-	{/if}
-
-	<!-- Input bar -->
-	<div class="flex gap-2 items-end">
-		<textarea
-			bind:value={input}
-			onkeydown={onKeydown}
-			disabled={sending}
-			rows={2}
-			placeholder="Type a message… (Enter to send, Shift+Enter for new line)"
-			class="flex-1 px-4 py-2.5 text-sm rounded-xl border border-surface-300-700 bg-white dark:bg-gray-900 resize-none focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 transition-colors"
-		></textarea>
-		<button
-			onclick={send}
-			disabled={!input.trim() || sending}
-			class="px-4 py-2.5 text-sm font-semibold rounded-xl bg-primary-500 hover:bg-primary-600 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors shrink-0"
-		>Send</button>
-	</div>
 
 </div>
