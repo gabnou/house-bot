@@ -357,10 +357,16 @@ async def status():
     except Exception:
         results["ollama"].setdefault("active_model", None)
 
-    # WhatsApp Bridge (Node.js :3001) — /health or fall back to TCP probe
+    # WhatsApp Bridge (Node.js :3001) — /health already exposes connected: bool
+    wa_connected = False
     try:
         r = _req.get("http://localhost:3001/health", timeout=3)
-        results["bridge"] = {"up": r.status_code < 500}
+        if r.status_code < 500:
+            health = r.json()
+            results["bridge"] = {"up": True}
+            wa_connected = bool(health.get("connected", False))
+        else:
+            results["bridge"] = {"up": False}
     except Exception:
         import socket
         try:
@@ -368,6 +374,12 @@ async def status():
                 results["bridge"] = {"up": True}
         except Exception:
             results["bridge"] = {"up": False}
+
+    # Whether at least one WhatsApp partner is configured (no JIDs exposed)
+    results["has_partners"] = bool(os.getenv("PARTNER_LID", "").strip())
+
+    # Whether WhatsApp session is actively paired (same source as /health endpoint)
+    results["wa_connected"] = wa_connected
 
     # Safe config snapshot — no secrets, no JIDs
     results["config"] = [
@@ -2193,6 +2205,49 @@ async def save_location_settings(req: LocationSettingsRequest):
     logger.info("✅ Location settings saved: %s (%.4f, %.4f) tz=%s lang=%s",
                 city, req.latitude, req.longitude, timezone, lang)
     return JSONResponse(content={"ok": True})
+
+
+# ── Config readiness ──────────────────────────────────────────────────────────
+
+@router.get("/install/config-status")
+async def get_config_status():
+    """
+    Single-call readiness check used by the home page.
+    Mirrors the 4 real conditions shown on the Configuration page:
+      1. Ollama model configured (OLLAMA_MODEL env set)
+      2. WhatsApp paired    (bridge /qr returns connected:true)
+      3. Senders authorised (PARTNER_LID env set)
+      4. Location set       (DEFAULT_CITY + lat + lon)
+    Returns {"configured": bool, "steps": {...}}.
+    """
+    import requests as _req
+
+    step_ollama   = bool(os.getenv("OLLAMA_MODEL", "").strip())
+    step_senders  = bool(os.getenv("PARTNER_LID", "").strip())
+    step_location = bool(
+        os.getenv("DEFAULT_CITY",      "").strip()
+        and os.getenv("DEFAULT_LATITUDE",  "").strip()
+        and os.getenv("DEFAULT_LONGITUDE", "").strip()
+    )
+
+    # Same check as /install/whatsapp/qr (Step 3 of the config page)
+    step_wa = False
+    try:
+        r = _req.get("http://localhost:3001/qr", timeout=3)
+        if r.status_code == 200:
+            step_wa = bool(r.json().get("connected", False))
+    except Exception:
+        pass
+
+    return JSONResponse(content={
+        "configured": step_ollama and step_wa and step_senders and step_location,
+        "steps": {
+            "ollama":    step_ollama,
+            "wa":        step_wa,
+            "senders":   step_senders,
+            "location":  step_location,
+        },
+    })
 
 
 # ── Test Suite ────────────────────────────────────────────────────────────────

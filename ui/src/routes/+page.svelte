@@ -28,22 +28,20 @@
 	let serviceState = $state<PillState>('loading');
 
 	onMount(async () => {
-		try {
-			const res = await fetch('/admin/api/status');
-			if (!res.ok) throw new Error();
-			const data = await res.json();
+		const [cfgRes, statusRes] = await Promise.all([
+			fetch('/admin/api/install/config-status').catch(() => null),
+			fetch('/admin/api/status').catch(() => null),
+		]);
 
-			// Configured: LLM model + default city must be set
-			const cfg: { key: string; value: string }[] = data.config ?? [];
-			const get = (key: string) => cfg.find(c => c.key === key)?.value ?? '';
-			configState = (get('OLLAMA_MODEL') && get('DEFAULT_CITY')) ? 'ok' : 'warn';
+		// Configured: all 4 steps complete (Ollama, WA paired, senders, location)
+		configState = (cfgRes?.ok && (await cfgRes.json().catch(() => ({}))).configured === true)
+			? 'ok' : 'warn';
 
-			// Operational: Ollama + Bridge must be up
-			const ollamaUp = data.ollama?.up === true;
-			const bridgeUp = data.bridge?.up === true;
-			serviceState = (ollamaUp && bridgeUp) ? 'ok' : 'warn';
-		} catch {
-			configState  = 'warn';
+		// Operational: Ollama + Bridge processes are up
+		if (statusRes?.ok) {
+			const data = await statusRes.json().catch(() => ({}));
+			serviceState = (data.ollama?.up === true && data.bridge?.up === true) ? 'ok' : 'warn';
+		} else {
 			serviceState = 'warn';
 		}
 	});

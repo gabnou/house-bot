@@ -81,6 +81,61 @@
 		}
 	}
 
+	// Calendar is considered configured once the token is valid (or expired but refreshable)
+	// AND a calendar has been selected. 'missing'/'invalid'/'unknown' mean setup is still pending.
+	const calendarConfigured = $derived(
+		(googleStatus === 'valid' || googleStatus === 'expired') && !!googleConfiguredCalendar
+	);
+
+	async function handleCalendarToggle() {
+		skillMsg.calendar = null;
+		const visuallyOn = skillEnabled.calendar && calendarConfigured;
+		if (visuallyOn) {
+			// Visually ON → disable normally
+			await toggleSkill('calendar');
+		} else if (!skillEnabled.calendar) {
+			// Currently disabled in backend → enable via API and force-expand config panel
+			skillToggling.calendar = true;
+			try {
+				const res = await fetch('/admin/api/skills/calendar', {
+					method: 'PUT',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ enabled: true }),
+				});
+				const data = await res.json();
+				if (res.ok && data.ok) {
+					skillEnabled.calendar = true;
+					skillOpen.calendar = true;
+				} else {
+					skillMsg.calendar = { ok: false, text: data.detail ?? 'Failed to update skill.' };
+				}
+			} catch (e) {
+				skillMsg.calendar = { ok: false, text: e instanceof Error ? e.message : 'Request failed' };
+			} finally {
+				skillToggling.calendar = false;
+			}
+		} else {
+			// Enabled in backend but not yet configured → just open the panel
+			skillOpen.calendar = true;
+		}
+	}
+
+	function toggleCalendarPanel() {
+		if (skillOpen.calendar && skillEnabled.calendar && !calendarConfigured) {
+			// Collapsing while enabled but setup incomplete → revert toggle and warn
+			skillOpen.calendar = false;
+			skillEnabled.calendar = false;
+			skillMsg.calendar = { ok: false, text: 'Setup incomplete — skill disabled. Re-enable to finish configuration.' };
+			fetch('/admin/api/skills/calendar', {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ enabled: false }),
+			}).catch(() => {});
+		} else {
+			skillOpen.calendar = !skillOpen.calendar;
+		}
+	}
+
 	// ── Google Calendar OAuth state ───────────────────────────────────────────
 	type GoogleStatus = 'unknown' | 'valid' | 'missing' | 'expired' | 'invalid';
 	let googleStatus = $state<GoogleStatus>('unknown');
@@ -373,8 +428,8 @@
 		<div
 			role="button"
 			tabindex="0"
-			onclick={() => skillOpen.calendar = !skillOpen.calendar}
-			onkeydown={(e) => e.key === 'Enter' && (skillOpen.calendar = !skillOpen.calendar)}
+			onclick={() => toggleCalendarPanel()}
+			onkeydown={(e) => e.key === 'Enter' && toggleCalendarPanel()}
 			class="w-full px-5 py-4 flex items-center gap-4 cursor-pointer hover:bg-surface-100-900/50 transition-colors select-none"
 		>
 			<span class="text-2xl shrink-0">📅</span>
@@ -400,15 +455,15 @@
 			{/if}
 			<!-- Enable toggle -->
 			<button
-				onclick={(e) => { e.stopPropagation(); toggleSkill('calendar'); }}
+				onclick={(e) => { e.stopPropagation(); handleCalendarToggle(); }}
 				disabled={skillToggling.calendar}
 				class="shrink-0 relative inline-flex h-6 w-11 items-center rounded-full transition-colors
-				{skillEnabled.calendar ? 'bg-primary-500' : 'bg-surface-300-700'}
+				{skillEnabled.calendar && calendarConfigured ? 'bg-primary-500' : 'bg-surface-300-700'}
 				disabled:opacity-40 disabled:cursor-not-allowed"
 				aria-label="Toggle Google Calendar skill"
 			>
 				<span class="inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform
-					{skillEnabled.calendar ? 'translate-x-6' : 'translate-x-1'}"></span>
+					{skillEnabled.calendar && calendarConfigured ? 'translate-x-6' : 'translate-x-1'}"></span>
 			</button>
 			<!-- Chevron -->
 			<span class="text-surface-400-600 text-xs shrink-0 transition-transform {skillOpen.calendar ? 'rotate-180' : ''}">▼</span>
@@ -423,6 +478,21 @@
 		<!-- Google Calendar configuration (shown when enabled AND expanded) -->
 		{#if skillEnabled.calendar && skillOpen.calendar}
 			<div class="border-t border-surface-200-800 p-5 space-y-4">
+
+				{#if !calendarConfigured}
+					<!-- Setup-pending banner -->
+					<div class="flex items-start gap-3 px-4 py-3 rounded-xl border border-warning-500/40 bg-warning-500/5">
+						<span class="text-base mt-0.5">⚠️</span>
+						<div class="flex-1 min-w-0">
+							<p class="text-xs font-semibold text-warning-400">Complete setup to keep this skill enabled</p>
+							<p class="text-[11px] text-surface-400-600 mt-0.5">If you close this panel before finishing, the skill will be automatically disabled.</p>
+						</div>
+						<button
+							onclick={() => toggleCalendarPanel()}
+							class="shrink-0 text-xs px-2 py-1 rounded bg-warning-500/10 text-warning-400 hover:bg-warning-500/20 transition-colors"
+						>Disable &amp; close</button>
+					</div>
+				{/if}
 
 				<!-- Section title + refresh -->
 				<div class="flex items-center justify-between">
