@@ -27,6 +27,7 @@
 	// ── State ──────────────────────────────────────────────────────────────
 	let cases = $state<TestCase[]>([]);
 	let loadError = $state<string | null>(null);
+	let loadingCases = $state(true);
 
 	// Run state
 	type RunPhase = 'idle' | 'running' | 'done' | 'error';
@@ -111,12 +112,15 @@
 	// ── API ─────────────────────────────────────────────────────────────────
 	async function loadCases() {
 		loadError = null;
+		loadingCases = true;
 		try {
 			const res = await fetch('/admin/api/test/cases');
 			if (!res.ok) throw new Error(`HTTP ${res.status}`);
 			cases = await res.json();
 		} catch (e: unknown) {
 			loadError = e instanceof Error ? e.message : 'Failed to load test cases';
+		} finally {
+			loadingCases = false;
 		}
 	}
 
@@ -278,11 +282,17 @@
 <!-- ── Page ─────────────────────────────────────────────────────────────── -->
 <div class="max-w-4xl mx-auto space-y-6">
 
+	<!-- Tab bar -->
+	<div class="flex gap-1 border-b border-surface-200-800">
+		<a href="/testing" class="px-4 py-2 text-sm font-medium border-b-2 border-primary-500 text-primary-500 -mb-px">Scripted Tests</a>
+		<a href="/testing/chat" class="px-4 py-2 text-sm font-medium text-surface-400-600 hover:text-surface-700-300 border-b-2 border-transparent transition-colors">Interactive Tests</a>
+	</div>
+
 	<!-- Header -->
 	<div class="flex items-center justify-between">
 		<div>
-			<h1 class="text-2xl font-bold">Testing</h1>
-			<p class="text-sm text-surface-400-600 mt-0.5">Run test messages against the bot to verify its behaviour.</p>
+			<h1 class="text-2xl font-bold">Scripted Tests</h1>
+			<p class="text-sm text-surface-400-600 mt-0.5">Run predefined test messages against the bot to verify its behaviour.</p>
 			<p class="text-xs text-surface-400-600 mt-0.5">Shopping data is never touched. Calendar-modifying tests can be paused with the skip toggle.</p>
 		</div>
 		<div class="flex items-center gap-2">
@@ -338,7 +348,7 @@
 
 	<!-- Test case cards -->
 	{#if cases.length === 0 && !loadError}
-	<div class="text-center py-12 text-surface-400-600 text-sm">No test cases loaded.</div>
+	<div class="text-center py-12 text-surface-400-600 text-sm">{loadingCases ? 'Loading tests…' : 'No tests found.'}</div>
 	{:else}
 	<div class="flex flex-col divide-y divide-surface-200-800 rounded-xl border border-surface-200-800 overflow-hidden">
 		{#each cases as c, i}

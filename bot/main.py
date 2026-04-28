@@ -105,6 +105,7 @@ app.include_router(admin_router)
 class Message(BaseModel):
     sender: str
     text: str
+    user_context_override: dict | None = None
 
 class Broadcast(BaseModel):
     text: str
@@ -154,142 +155,149 @@ async def broadcast(msg: Broadcast):
 # Main message handler endpoint
 @app.post("/message")
 async def handle_message(msg: Message):
+    import intent_parser as _ip
     import time
     t0 = time.time()
     logger.info("📩 From %s: %s", msg.sender, msg.text)
     text = msg.text.strip()
     if not text:
         return {"reply": None, "notification": None}
-    # Resolve sender JID to display name if available
-    sender_name = PARTNER_NAME_MAP.get(msg.sender, "")
-    logger.debug("🔍 Received text: '%s'", text)
-    # Try fast intent detection first — no language overhead for keyword messages
-    intent = pre_route(text)
-    effective_text = text
-    detected_lang = None
-
-    if intent:
-        logger.debug("⚡ pre_route match: %s", intent)
-    else:
-        # Detect language before sending to LLM
-        lang_info = detect_language(text, sender_name=sender_name)
-        lang = lang_info.get("language", "").strip() if lang_info else ""
-        confidence = lang_info.get("confidence", "low").strip().lower() if lang_info else "low"
-
-        if lang and lang.lower() != "english" and confidence in ("high", "medium"):
-            logger.info("🌐 Detected language: %s (%s confidence) — translating...", lang, confidence)
-            translated = translate_to_english(text, lang, sender_name=sender_name)
-            if translated:
-                logger.info("🌐 Translated to English: %s", translated)
-                detected_lang = lang
-                effective_text = translated
-                # Re-run fast routing on the translated text — saves classify + parse_intent LLM calls
-                # for simple messages like "aiuto" → "help", "chi sei?" → "who are you?"
-                intent = pre_route(effective_text)
-                if intent:
-                    logger.debug("⚡ pre_route match (post-translation): %s", intent)
-
-        if not intent:
-            # Classify category if not directly detectable (handles non-keyword messages)
-            if detect_category(effective_text) is None:
-                classified = classify_intent_category(effective_text)
-                if classified:
-                    logger.info("🏷️ Classified as '%s' — prepending keyword", classified)
-                    effective_text = f"{classified} {effective_text}"
-
-            from intent_parser import MODEL as _active_model
-            logger.debug("🤖 Sending to Ollama (%s): '%s'", _active_model, effective_text)
-            intent = parse_intent(effective_text, sender_name=sender_name)
-
-    action = intent.get("action", "unknown")
-    t1 = time.time()
-    logger.debug("⏱️ parse_intent: %.2fs", t1 - t0)
-    reply = None
-    notification = None
-
-    from orchestrator import handle_intent as _orchestrator
+    # Apply per-request user context override (used by Interactive Tests; never touches production data)
+    if msg.user_context_override is not None:
+        _ip._user_context_override = msg.user_context_override or {}
     try:
-        orchestrator_result = await _orchestrator(intent, effective_text, msg.sender)
-    except Exception as e:
-        logger.exception("Orchestrator error: %s", e)
-        orchestrator_result = None
+        # Resolve sender JID to display name if available
+        sender_name = PARTNER_NAME_MAP.get(msg.sender, "")
+        logger.debug("🔍 Received text: '%s'", text)
+        # Try fast intent detection first — no language overhead for keyword messages
+        intent = pre_route(text)
+        effective_text = text
+        detected_lang = None
 
-    if orchestrator_result:
-        reply = orchestrator_result.get("reply")
-        notification = orchestrator_result.get("notification")
-    else:
-        # Fallback for actions not handled by any skill (help, unknown, error)
-        match action:
-            case "identity":
-                reply = (
-                    f"🤖 I'm *{WHATSAPP_APPNAME}*, your home assistant bot!\n\n"
-                    "I can help you with:\n"
-                    "🛒 Shopping list\n"
-                    "🌤️ Weather forecasts\n"
-                    "📅 Google Calendar\n\n"
-                    "Send *help* to see all available commands."
-                )
-            case "help":
-                reply = (
-                    f"🤖 *{WHATSAPP_APPNAME} — What I can do*\n\n"
-                    "🛒 *Shopping list*\n"
-                    "  add milk and eggs\n"
-                    "  add aspirin\n"
-                    "  I bought milk\n"
-                    "  remove bread\n"
-                    "  what's missing?\n"
-                    "  clear the list\n\n"
-                    "🌤️ *Weather*\n"
-                    "  weather in Barcelona\n"
-                    "  weather now\n"
-                    "  weather now in Milan\n"
-                    "  forecast next 4 days\n"
-                    "  forecast next hours\n"
-                    "  forecast next 6 hours in New York\n"
-                    "  forecast\n"
-                    "  forecast London\n\n"
-                    "📅 *Calendar*\n"
-                    "  what do I have today?\n"
-                    "  this week\n"
-                    "  events in April\n"
-                    "  events from the 5th to the 20th of April\n"
-                    "  details dinner with John\n"
-                    "  add dinner with John friday 28th at 9pm\n"
-                    "  delete dinner with John\n"
-                    "  move doctor visit from April 5th to April 6th at 11am\n\n"
-                )
-            case _:
-                llm_reply = intent.get("reply", "I couldn't understand that, please try again!")
-                reply = (
-                    f"🤖 {llm_reply}\n\n"
-                    "I can help you with:\n"
-                    "🛒 Shopping list\n"
-                    "🌤️ Weather forecasts\n"
-                    "📅 Google Calendar\n\n"
-                )
-
-    t2 = time.time()
-    logger.debug("⏱️ action '%s': %.2fs", action, t2 - t1)
-    logger.debug("⏱️ total: %.2fs", t2 - t0)
-
-    # Translate reply back if the original message was in a foreign language
-    if detected_lang and reply:
-        translated_reply = translate_from_english(reply, detected_lang, sender_name=sender_name)
-        if translated_reply:
-            reply = translated_reply
+        if intent:
+            logger.debug("⚡ pre_route match: %s", intent)
         else:
-            logger.warning("⚠️ Back-translation to %s failed — reply sent in English", detected_lang)
+            # Detect language before sending to LLM
+            lang_info = detect_language(text, sender_name=sender_name)
+            lang = lang_info.get("language", "").strip() if lang_info else ""
+            confidence = lang_info.get("confidence", "low").strip().lower() if lang_info else "low"
 
-    # Translate shopping notification using USER_LANGUAGE (goes to all partners)
-    user_lang = os.getenv("USER_LANGUAGE", "").strip()
-    if notification and user_lang and user_lang.lower() != "english":
-        translated_notification = translate_from_english(notification, user_lang)
-        if translated_notification:
-            notification = translated_notification
+            if lang and lang.lower() != "english" and confidence in ("high", "medium"):
+                logger.info("🌐 Detected language: %s (%s confidence) — translating...", lang, confidence)
+                translated = translate_to_english(text, lang, sender_name=sender_name)
+                if translated:
+                    logger.info("🌐 Translated to English: %s", translated)
+                    detected_lang = lang
+                    effective_text = translated
+                    # Re-run fast routing on the translated text — saves classify + parse_intent LLM calls
+                    # for simple messages like "aiuto" → "help", "chi sei?" → "who are you?"
+                    intent = pre_route(effective_text)
+                    if intent:
+                        logger.debug("⚡ pre_route match (post-translation): %s", intent)
+
+            if not intent:
+                # Classify category if not directly detectable (handles non-keyword messages)
+                if detect_category(effective_text) is None:
+                    classified = classify_intent_category(effective_text)
+                    if classified:
+                        logger.info("🏷️ Classified as '%s' — prepending keyword", classified)
+                        effective_text = f"{classified} {effective_text}"
+
+                from intent_parser import MODEL as _active_model
+                logger.debug("🤖 Sending to Ollama (%s): '%s'", _active_model, effective_text)
+                intent = parse_intent(effective_text, sender_name=sender_name)
+
+        action = intent.get("action", "unknown")
+        t1 = time.time()
+        logger.debug("⏱️ parse_intent: %.2fs", t1 - t0)
+        reply = None
+        notification = None
+
+        from orchestrator import handle_intent as _orchestrator
+        try:
+            orchestrator_result = await _orchestrator(intent, effective_text, msg.sender)
+        except Exception as e:
+            logger.exception("Orchestrator error: %s", e)
+            orchestrator_result = None
+
+        if orchestrator_result:
+            reply = orchestrator_result.get("reply")
+            notification = orchestrator_result.get("notification")
         else:
-            logger.warning("⚠️ Notification translation to %s failed — sent in English", user_lang)
+            # Fallback for actions not handled by any skill (help, unknown, error)
+            match action:
+                case "identity":
+                    reply = (
+                        f"🤖 I'm *{WHATSAPP_APPNAME}*, your home assistant bot!\n\n"
+                        "I can help you with:\n"
+                        "🛒 Shopping list\n"
+                        "🌤️ Weather forecasts\n"
+                        "📅 Google Calendar\n\n"
+                        "Send *help* to see all available commands."
+                    )
+                case "help":
+                    reply = (
+                        f"🤖 *{WHATSAPP_APPNAME} — What I can do*\n\n"
+                        "🛒 *Shopping list*\n"
+                        "  add milk and eggs\n"
+                        "  add aspirin\n"
+                        "  I bought milk\n"
+                        "  remove bread\n"
+                        "  what's missing?\n"
+                        "  clear the list\n\n"
+                        "🌤️ *Weather*\n"
+                        "  weather in Barcelona\n"
+                        "  weather now\n"
+                        "  weather now in Milan\n"
+                        "  forecast next 4 days\n"
+                        "  forecast next hours\n"
+                        "  forecast next 6 hours in New York\n"
+                        "  forecast\n"
+                        "  forecast London\n\n"
+                        "📅 *Calendar*\n"
+                        "  what do I have today?\n"
+                        "  this week\n"
+                        "  events in April\n"
+                        "  events from the 5th to the 20th of April\n"
+                        "  details dinner with John\n"
+                        "  add dinner with John friday 28th at 9pm\n"
+                        "  delete dinner with John\n"
+                        "  move doctor visit from April 5th to April 6th at 11am\n\n"
+                    )
+                case _:
+                    llm_reply = intent.get("reply", "I couldn't understand that, please try again!")
+                    reply = (
+                        f"🤖 {llm_reply}\n\n"
+                        "I can help you with:\n"
+                        "🛒 Shopping list\n"
+                        "🌤️ Weather forecasts\n"
+                        "📅 Google Calendar\n\n"
+                    )
 
-    return {"reply": reply, "notification": notification}
+        t2 = time.time()
+        logger.debug("⏱️ action '%s': %.2fs", action, t2 - t1)
+        logger.debug("⏱️ total: %.2fs", t2 - t0)
+
+        # Translate reply back if the original message was in a foreign language
+        if detected_lang and reply:
+            translated_reply = translate_from_english(reply, detected_lang, sender_name=sender_name)
+            if translated_reply:
+                reply = translated_reply
+            else:
+                logger.warning("⚠️ Back-translation to %s failed — reply sent in English", detected_lang)
+
+        # Translate shopping notification using USER_LANGUAGE (goes to all partners)
+        user_lang = os.getenv("USER_LANGUAGE", "").strip()
+        if notification and user_lang and user_lang.lower() != "english":
+            translated_notification = translate_from_english(notification, user_lang)
+            if translated_notification:
+                notification = translated_notification
+            else:
+                logger.warning("⚠️ Notification translation to %s failed — sent in English", user_lang)
+
+        return {"reply": reply, "notification": notification}
+    finally:
+        _ip._user_context_override = None
 
 # Serve the SvelteKit production build (ui/build/) if it exists.
 # MUST be mounted LAST — StaticFiles at "/" would intercept all routes

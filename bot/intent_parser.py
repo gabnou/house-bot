@@ -14,6 +14,10 @@ OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
 
 _USER_CONTEXT_FILE = os.path.join(os.path.dirname(__file__), "user_context.json")
 
+# Per-request override: set by the /message handler when a caller passes a temporary
+# context (e.g. the Testing → Interactive Tests page).  Cleared after each request.
+_user_context_override: dict | None = None
+
 
 def get_user_context() -> dict | None:
     """Load user-defined behavioural context (preferred language + custom instructions).
@@ -21,7 +25,12 @@ def get_user_context() -> dict | None:
     Language is always taken from the USER_LANGUAGE env var.
     Instructions are read from disk each call so Admin API changes take effect
     on the next message without requiring a restart.
+
+    If _user_context_override is set (by the /message handler for test requests),
+    it is returned as-is instead of reading from disk / env.
     """
+    if _user_context_override is not None:
+        return _user_context_override if _user_context_override else None
     language = os.getenv("USER_LANGUAGE", "").strip()
     instructions = ""
     instructions_original = ""
