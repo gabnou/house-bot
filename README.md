@@ -32,27 +32,18 @@ Your home assistant on WhatsApp — manage a shared shopping list, keep your Goo
 
 ## Installation
 
-### 1 — Download the latest release
-
 Open the **Terminal** app (press `⌘ Space`, type *Terminal*, press Enter) and run:
 
 ```bash
-cd ~/Downloads             # or wherever you want to install it, e.g. cd ~/Desktop
 mkdir housebot && cd housebot
 curl -L -o housebot.zip https://github.com/gabnou/house-bot/releases/latest/download/housebot.zip
 unzip housebot.zip
-```
-
-### 2 — Run the installer
-
-```bash
-chmod 755 install.sh    # only needed if the next command doesn't work
 ./install.sh
 ```
 
 The installer takes care of everything you need to run the bot: Homebrew, Python, Node.js, Ollama (Private AI models), dependencies, and starting the bot for the first time.
 
-### 3 — Open the Control Panel and finish setup
+## Configuration
 
 When the installer finishes, open **[http://localhost:8000](http://localhost:8000)** in your browser and go to the **Configuration** page. Follow the sections in order:
 
@@ -117,10 +108,10 @@ move doctor visit to April 6th at 11am
 
 ### Special commands
 
-| Message | What happens |
-|---|---|
-| `help` | Shows all available commands |
-| `who are you` | Bot introduces itself |
+```
+help
+who are you
+```
 
 All commands work in any language.
 
