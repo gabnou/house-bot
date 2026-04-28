@@ -226,7 +226,7 @@ def classify_intent_category(text: str) -> str | None:
             "prompt": prompt,
             "stream": False,
             "options": {"temperature": 0, "num_predict": 10},
-        }, timeout=15)
+        }, timeout=60)
         raw = response.json().get("response", "").strip().lower()
         # Strip markdown formatting (e.g. **shopping** → shopping) and stray punctuation
         answer = re.sub(r'[*_`#]', '', raw).strip().strip('"').strip("'").strip()
@@ -321,7 +321,7 @@ def detect_language(text: str, sender_name: str = "") -> dict:
             "prompt": prompt,
             "stream": False,
             "options": {"temperature": 0, "num_predict": 50},
-        }, timeout=30)
+        }, timeout=90)
         raw = response.json().get("response", "").strip()
         logger.debug("🌐 detect_language raw → %s", raw)
         return _parse_raw(raw)
