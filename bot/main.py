@@ -28,7 +28,7 @@ from pydantic import BaseModel
 from contextlib import asynccontextmanager
 from faster_whisper import WhisperModel
 from services.shopping_db import init_db
-from intent_parser import parse_intent, detect_category, validate_transcription, detect_language, translate_to_english, translate_from_english, classify_intent_category, preload_embed_anchors
+from intent_parser import parse_intent, detect_category, validate_transcription, detect_language, translate_to_english, translate_from_english, classify_intent_category, preload_embed_anchors, warmup_llm
 from admin.router import router as admin_router
 
 WHATSAPP_APPNAME = os.getenv("WHATSAPP_APPNAME", "HouseBot").strip()
@@ -93,6 +93,9 @@ async def lifespan(app: FastAPI):
     import threading
     threading.Thread(target=preload_embed_anchors, daemon=True, name="embed-warmup").start()
     logger.info("🧬 Embedding anchor preload started in background.")
+    # Warm up the main LLM so the first real message doesn't hit a cold-load delay
+    # (critical on CPU-only hardware such as Intel Macs where model loading can take >60 s)
+    threading.Thread(target=warmup_llm, daemon=True, name="llm-warmup").start()
     yield
 
 # FastAPI app instance

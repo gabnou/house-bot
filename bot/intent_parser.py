@@ -125,6 +125,26 @@ def _mean_vec(vecs: list[list[float]]) -> list[float]:
     return [sum(v[i] for v in vecs) / n for i in range(dim)]
 
 
+def warmup_llm() -> None:
+    """Send a minimal request to Ollama to pre-load the main LLM model into RAM.
+    Safe to call from a background thread. Uses a generous timeout (120 s) to
+    accommodate slow CPU-only hardware (e.g. Intel Mac without GPU acceleration)."""
+    keep_alive = os.getenv("OLLAMA_KEEP_ALIVE", "5m")
+    logger.info("🤖 Warming up LLM model '%s'...", MODEL)
+    try:
+        t0 = time.time()
+        requests.post(OLLAMA_URL, json={
+            "model": MODEL,
+            "prompt": "hi",
+            "stream": False,
+            "keep_alive": keep_alive,
+            "options": {"temperature": 0, "num_predict": 1},
+        }, timeout=120)
+        logger.info("🤖 LLM warm-up complete (%.1fs).", time.time() - t0)
+    except Exception as e:
+        logger.warning("⚠️ LLM warm-up error: %s", e)
+
+
 def preload_embed_anchors() -> None:
     """Pre-compute mean anchor embeddings for each category and warm up the embed model.
     Safe to call from a background thread; idempotent (skips if already cached)."""
