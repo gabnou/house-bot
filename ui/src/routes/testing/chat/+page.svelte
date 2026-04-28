@@ -69,6 +69,25 @@
 			: `${accepted} / ${rated.length} acceptable (${Math.round((accepted / rated.length) * 100)}%)`
 	);
 
+	// Suggestion shown once ≥ 3 responses are rated
+	const scoreSuggestion = $derived((): { text: string; color: string } | null => {
+		if (rated.length < 3) return null;
+		const pct = accepted / rated.length;
+		if (pct === 1)  return { text: 'All responses good — model is performing well.',                             color: 'text-green-600 dark:text-green-400' };
+		if (pct >= 0.8) return { text: 'Minor issues — try refining the User Context prompt.',                       color: 'text-green-600 dark:text-green-400' };
+		if (pct >= 0.5) return { text: 'Mixed results — adjust the User Context prompt; if issues persist, try a better model.', color: 'text-yellow-600 dark:text-yellow-400' };
+		return           { text: 'Poor results — consider switching to a more capable model in Config.',              color: 'text-red-500' };
+	});
+
+	// Speed suggestion: skip first exchange (model warm-up), evaluate from the second onward
+	const speedSuggestion = $derived((): { text: string; color: string } | null => {
+		const measurable = exchanges.slice(1).filter(e => e.duration !== null);
+		if (measurable.length === 0) return null;
+		const avg = measurable.reduce((s, e) => s + e.duration!, 0) / measurable.length;
+		if (avg > 30_000) return { text: `Slow responses (avg ${(avg / 1000).toFixed(0)}s) — consider switching to a smaller, faster model in Config.`, color: 'text-amber-600 dark:text-amber-400' };
+		return null;
+	});
+
 	// ── Load production context as default ─────────────────────────────────
 	onMount(async () => {
 		try {
@@ -164,10 +183,20 @@
 			<p class="text-xs text-surface-400-600 mt-0.5">Responses are not sent to WhatsApp. Your session score is tracked below.</p>
 		</div>
 		<div class="flex items-center gap-3">
-			{#if scoreStr}
-			<span class="text-sm font-medium {accepted === rated.length ? 'text-green-600 dark:text-green-400' : rated.length > 0 && accepted / rated.length < 0.5 ? 'text-red-500' : 'text-surface-500'}">
-				{scoreStr}
-			</span>
+			{#if scoreStr || speedSuggestion()}
+			<div class="flex flex-col items-end gap-0.5">
+				{#if scoreStr}
+				<span class="text-sm font-medium {accepted === rated.length ? 'text-green-600 dark:text-green-400' : rated.length > 0 && accepted / rated.length < 0.5 ? 'text-red-500' : 'text-surface-500'}">
+					{scoreStr}
+				</span>
+				{/if}
+				{#if scoreSuggestion()}
+				<span class="text-[11px] {scoreSuggestion()!.color}">{scoreSuggestion()!.text}</span>
+				{/if}
+				{#if speedSuggestion()}
+				<span class="text-[11px] {speedSuggestion()!.color}">{speedSuggestion()!.text}</span>
+				{/if}
+			</div>
 			{/if}
 			{#if exchanges.length > 0}
 			<button

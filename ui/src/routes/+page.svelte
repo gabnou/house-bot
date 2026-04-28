@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
+	import { onMount } from 'svelte';
 
 	let isDark = $state(false);
 
@@ -21,6 +22,32 @@
 		}
 	}
 
+	// ── Status pills ────────────────────────────────────────────────────────
+	type PillState = 'loading' | 'ok' | 'warn';
+	let configState  = $state<PillState>('loading');
+	let serviceState = $state<PillState>('loading');
+
+	onMount(async () => {
+		try {
+			const res = await fetch('/admin/api/status');
+			if (!res.ok) throw new Error();
+			const data = await res.json();
+
+			// Configured: LLM model + default city must be set
+			const cfg: { key: string; value: string }[] = data.config ?? [];
+			const get = (key: string) => cfg.find(c => c.key === key)?.value ?? '';
+			configState = (get('OLLAMA_MODEL') && get('DEFAULT_CITY')) ? 'ok' : 'warn';
+
+			// Operational: Ollama + Bridge must be up
+			const ollamaUp = data.ollama?.up === true;
+			const bridgeUp = data.bridge?.up === true;
+			serviceState = (ollamaUp && bridgeUp) ? 'ok' : 'warn';
+		} catch {
+			configState  = 'warn';
+			serviceState = 'warn';
+		}
+	});
+
 </script>
 
 <div class="space-y-6">
@@ -34,15 +61,51 @@
 				Manage shopping lists, Google Calendar events, and real-time weather.<br />
 				Privacy-first by design — powered entirely by local AI, your data never leaves home.
 			</p>
-			<button
-				onclick={toggleMode}
-				class="self-start flex items-center gap-2 px-3 py-2 rounded-lg text-sm
-				text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-800
-				hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
-			>
-				<span>{isDark ? '☀️' : '🌙'}</span>
-				<span>{isDark ? 'Light mode' : 'Dark mode'}</span>
-			</button>
+			<div class="flex flex-wrap items-center gap-2">
+				<button
+					onclick={toggleMode}
+					class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm
+					text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-800
+					hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+				>
+					<span>{isDark ? '☀️' : '🌙'}</span>
+					<span>{isDark ? 'Light mode' : 'Dark mode'}</span>
+				</button>
+
+				<!-- Configured pill -->
+				<a
+					href="/config"
+					class="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm transition-colors
+					{configState === 'loading' ? 'bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500' :
+					 configState === 'ok'      ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 hover:bg-green-200 dark:hover:bg-green-900/50' :
+					                             'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 hover:bg-amber-200 dark:hover:bg-amber-900/50'}"
+				>
+					{#if configState === 'loading'}
+						<span class="animate-pulse">⚙️</span><span>Checking…</span>
+					{:else if configState === 'ok'}
+						<span>✅</span><span>Configured</span>
+					{:else}
+						<span>⚠️</span><span>Not configured</span>
+					{/if}
+				</a>
+
+				<!-- Operational pill -->
+				<a
+					href="/admin"
+					class="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm transition-colors
+					{serviceState === 'loading' ? 'bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500' :
+					 serviceState === 'ok'      ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 hover:bg-green-200 dark:hover:bg-green-900/50' :
+					                              'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400 hover:bg-red-200 dark:hover:bg-red-900/50'}"
+				>
+					{#if serviceState === 'loading'}
+						<span class="animate-pulse">🔧</span><span>Checking…</span>
+					{:else if serviceState === 'ok'}
+						<span>✅</span><span>Operational</span>
+					{:else}
+						<span>🔴</span><span>Not operational</span>
+					{/if}
+				</a>
+			</div>
 		</div>
 	</div>
 

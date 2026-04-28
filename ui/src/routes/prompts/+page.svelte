@@ -226,5 +226,16 @@
 			{/if}
 		</div>
 	</div>
-</div>
 
+	<!-- CTA to interactive test -->
+	<div class="rounded-xl border border-surface-200-800 bg-surface-50-950 px-5 py-3.5 flex items-center gap-3">
+		<span class="text-lg">💬</span>
+		<p class="text-xs text-surface-400-600 flex-1">
+			Changed something? Test your instructions live before committing them to production.
+		</p>
+		<a
+			href="/testing/chat"
+			class="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium border border-surface-300-700 hover:bg-surface-100-900 transition-colors"
+		>Try it interactively →</a>
+	</div>
+</div>
