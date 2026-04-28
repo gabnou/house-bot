@@ -132,7 +132,20 @@
 </script>
 
 <!-- ── Page ─────────────────────────────────────────────────────────────── -->
-<div class="max-w-4xl mx-auto space-y-6">
+<div class="space-y-6">
+
+	<!-- Title banner -->
+	<div class="card bg-surface-50-950 border border-surface-200-800 rounded-xl p-5 flex items-center gap-4">
+		<span class="text-3xl">🧪</span>
+		<div class="flex-1">
+			<h2 class="text-lg font-bold">Testing</h2>
+			<p class="text-xs text-surface-400-600 mt-0.5">Run scripted tests against the bot or chat interactively to verify its behaviour.</p>
+		</div>
+		<a
+			href="/"
+			class="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium border border-surface-300-700 text-surface-500-500 hover:bg-surface-100-900 transition-colors"
+		>← Back</a>
+	</div>
 
 	<!-- Tab bar -->
 	<div class="flex gap-1 border-b border-surface-200-800">

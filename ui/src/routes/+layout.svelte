@@ -146,7 +146,9 @@
 
 		<!-- Page content -->
 		<main class="flex-1 overflow-y-auto p-6">
-			{@render children()}
+			<div class="max-w-5xl mx-auto">
+				{@render children()}
+			</div>
 		</main>
 
 		<!-- Footer: release version or git info -->

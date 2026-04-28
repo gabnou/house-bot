@@ -141,24 +141,31 @@
 <div class="space-y-6">
 
 	<!-- ── Header ──────────────────────────────────────────────────────── -->
-	<div class="card bg-surface-50-950 border border-surface-200-800 rounded-xl p-5 flex items-center justify-between">
-		<div class="flex items-center gap-4">
-			<span class="text-3xl">⚡</span>
-			<div>
-				<h2 class="text-lg font-bold">System Status</h2>
-				<p class="text-xs text-surface-400-600 mt-0.5">
-					{lastRefreshed ? `Last refreshed ${lastRefreshed.toLocaleTimeString()}` : 'Checking…'}
-				</p>
-			</div>
+	<div class="card bg-surface-50-950 border border-surface-200-800 rounded-xl p-5 flex items-center gap-4">
+		<span class="text-3xl">⚡</span>
+		<div class="flex-1">
+			<h2 class="text-lg font-bold">System Status</h2>
+			<p class="text-xs text-surface-400-600 mt-0.5 flex items-center gap-2 flex-wrap">
+				<span>Auto-refreshes every 30 s</span>
+				{#if lastRefreshed}
+				<span class="text-surface-300-700">·</span>
+				<span>Last refreshed {lastRefreshed.toLocaleTimeString()}</span>
+				{:else}
+				<span class="text-surface-300-700">·</span>
+				<span>Checking…</span>
+				{/if}
+				<span class="text-surface-300-700">·</span>
+				<button
+					onclick={fetchStatus}
+					disabled={statusLoading}
+					class="underline hover:text-primary-500 disabled:opacity-50 transition-colors"
+				>{statusLoading ? 'Refreshing…' : 'Refresh now'}</button>
+			</p>
 		</div>
-		<button
-			onclick={fetchStatus}
-			class="btn bg-surface-100-900 hover:bg-surface-200-800 text-surface-700-300 text-sm px-4 py-2 rounded-lg transition-colors flex items-center gap-2"
-			disabled={statusLoading}
-		>
-			<span class={statusLoading ? 'animate-spin inline-block' : ''}>↻</span>
-			Refresh
-		</button>
+		<a
+			href="/"
+			class="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium border border-surface-300-700 text-surface-500-500 hover:bg-surface-100-900 transition-colors"
+		>← Back</a>
 	</div>
 
 	<!-- ── Service Health Cards ────────────────────────────────────────── -->
