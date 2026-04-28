@@ -65,3 +65,24 @@ jobs:
         run: |
           gh release upload "${{ github.ref_name }}" "${ZIP_NAME}" \
             --clobber
+
+      - name: Publish to house-bot-releases (public repo)
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_PAT }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # Also ship a generic housebot.zip so the install script URL stays stable
+          cp "${ZIP_NAME}" "housebot.zip"
+
+          # Create the release in the public repo; if it already exists, skip creation
+          gh release create "${TAG}" \
+            --repo gabnou/house-bot-releases \
+            --title "${TAG}" \
+            --notes "See the [full release notes](https://github.com/gabnou/house-bot/releases/tag/${TAG}) in the source repository." \
+            "${ZIP_NAME}" \
+            "housebot.zip" \
+          || gh release upload "${TAG}" \
+            --repo gabnou/house-bot-releases \
+            --clobber \
+            "${ZIP_NAME}" \
+            "housebot.zip"
