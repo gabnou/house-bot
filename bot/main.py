@@ -180,23 +180,38 @@ async def handle_message(msg: Message):
         if intent:
             logger.debug("⚡ pre_route match: %s", intent)
         else:
-            # Detect language before sending to LLM
-            lang_info = detect_language(text, sender_name=sender_name)
-            lang = lang_info.get("language", "").strip() if lang_info else ""
-            confidence = lang_info.get("confidence", "low").strip().lower() if lang_info else "low"
-
-            if lang and lang.lower() != "english" and confidence in ("high", "medium"):
-                logger.info("🌐 Detected language: %s (%s confidence) — translating...", lang, confidence)
-                translated = translate_to_english(text, lang, sender_name=sender_name)
+            # Language handling strategy:
+            # - USER_LANGUAGE set to a non-English language → translate directly (no LLM detection)
+            # - USER_LANGUAGE set to English → skip detection and translation entirely
+            # - USER_LANGUAGE not set → LLM-based detection (original fallback)
+            configured_lang = os.getenv("USER_LANGUAGE", "").strip()
+            if configured_lang and configured_lang.lower() != "english":
+                logger.debug("🌐 Using configured language: %s", configured_lang)
+                translated = translate_to_english(text, configured_lang, sender_name=sender_name)
                 if translated:
-                    logger.info("🌐 Translated to English: %s", translated)
-                    detected_lang = lang
+                    logger.info("🌐 Translated %s→English: %s", configured_lang, translated)
+                    detected_lang = configured_lang
                     effective_text = translated
-                    # Re-run fast routing on the translated text — saves classify + parse_intent LLM calls
-                    # for simple messages like "aiuto" → "help", "chi sei?" → "who are you?"
                     intent = pre_route(effective_text)
                     if intent:
                         logger.debug("⚡ pre_route match (post-translation): %s", intent)
+            elif not configured_lang:
+                # No language configured: fall back to LLM-based detection
+                lang_info = detect_language(text, sender_name=sender_name)
+                lang = lang_info.get("language", "").strip() if lang_info else ""
+                confidence = lang_info.get("confidence", "low").strip().lower() if lang_info else "low"
+
+                if lang and lang.lower() != "english" and confidence in ("high", "medium"):
+                    logger.info("🌐 Detected language: %s (%s confidence) — translating...", lang, confidence)
+                    translated = translate_to_english(text, lang, sender_name=sender_name)
+                    if translated:
+                        logger.info("🌐 Translated to English: %s", translated)
+                        detected_lang = lang
+                        effective_text = translated
+                        intent = pre_route(effective_text)
+                        if intent:
+                            logger.debug("⚡ pre_route match (post-translation): %s", intent)
+            # else: USER_LANGUAGE=English — no detection or translation needed
 
             if not intent:
                 # Classify category if not directly detectable (handles non-keyword messages)
@@ -209,6 +224,31 @@ async def handle_message(msg: Message):
                 from intent_parser import MODEL as _active_model
                 logger.debug("🤖 Sending to Ollama (%s): '%s'", _active_model, effective_text)
                 intent = parse_intent(effective_text, sender_name=sender_name)
+
+                # Language enforcement fallback: if parse_intent failed and USER_LANGUAGE is
+                # configured, detect the actual language of the original text to decide
+                # whether the message was in a third (unsupported) language.
+                # - Detected English   → re-process without translation (natively supported)
+                # - Detected USER_LANGUAGE → genuine parse error, keep current response
+                # - Detected other     → ask user to write in USER_LANGUAGE or English
+                if intent.get("action") == "error" and configured_lang and configured_lang.lower() != "english":
+                    logger.info("🌐 parse_intent error with USER_LANGUAGE set — running language fallback")
+                    fallback_info = detect_language(text, sender_name=sender_name)
+                    fallback_lang = fallback_info.get("language", "").strip() if fallback_info else ""
+                    if fallback_lang and fallback_lang.lower() == "english":
+                        # Message was in English — re-process without translation
+                        logger.info("🌐 Fallback: detected English — re-processing without translation")
+                        detected_lang = None
+                        effective_text = text
+                        if detect_category(effective_text) is None:
+                            classified = classify_intent_category(effective_text)
+                            if classified:
+                                effective_text = f"{classified} {effective_text}"
+                        intent = parse_intent(effective_text, sender_name=sender_name)
+                    elif fallback_lang and fallback_lang.lower() != configured_lang.lower():
+                        # Third language — reject politely
+                        logger.info("🌐 Fallback: detected '%s' (not %s or English) — rejecting", fallback_lang, configured_lang)
+                        intent = {"action": "unknown", "reply": f"Please write in {configured_lang} or English. 😊"}
 
         action = intent.get("action", "unknown")
         t1 = time.time()
