@@ -28,7 +28,7 @@ from pydantic import BaseModel
 from contextlib import asynccontextmanager
 from faster_whisper import WhisperModel
 from services.shopping_db import init_db
-from intent_parser import parse_intent, detect_category, validate_transcription, detect_language, translate_to_english, translate_from_english, classify_intent_category, preload_embed_anchors, warmup_llm
+from intent_parser import parse_intent, detect_category, validate_transcription, detect_language, translate_to_english, translate_from_english, translate_from_english_batch, classify_intent_category, preload_embed_anchors, warmup_llm
 from admin.router import router as admin_router
 
 WHATSAPP_APPNAME = os.getenv("WHATSAPP_APPNAME", "HouseBot").strip()
@@ -321,22 +321,36 @@ async def handle_message(msg: Message):
         logger.debug("⏱️ action '%s': %.2fs", action, t2 - t1)
         logger.debug("⏱️ total: %.2fs", t2 - t0)
 
-        # Translate reply back if the original message was in a foreign language
-        if detected_lang and reply:
-            translated_reply = translate_from_english(reply, detected_lang, sender_name=sender_name)
-            if translated_reply:
-                reply = translated_reply
-            else:
-                logger.warning("⚠️ Back-translation to %s failed — reply sent in English", detected_lang)
-
-        # Translate shopping notification using USER_LANGUAGE (goes to all partners)
+        # Translate reply and notification back to the user's language.
+        # Both are batched into a single LLM call to avoid paying two sequential
+        # round-trips (which on slow CPU-only hardware can cost 16 s each).
         user_lang = os.getenv("USER_LANGUAGE", "").strip()
-        if notification and user_lang and user_lang.lower() != "english":
-            translated_notification = translate_from_english(notification, user_lang)
-            if translated_notification:
-                notification = translated_notification
-            else:
-                logger.warning("⚠️ Notification translation to %s failed — sent in English", user_lang)
+        reply_lang = detected_lang or (user_lang if user_lang.lower() != "english" else None)
+        notif_lang = user_lang if user_lang and user_lang.lower() != "english" else None
+
+        if reply_lang and reply and notif_lang and notification and reply_lang.lower() == notif_lang.lower():
+            # Both need translating to the same language — one LLM call
+            translated = translate_from_english_batch([reply, notification], reply_lang)
+            reply_t, notif_t = translated[0], translated[1]
+            reply = reply_t or reply
+            notification = notif_t or notification
+            if not reply_t:
+                logger.warning("⚠️ Back-translation to %s failed — reply sent in English", reply_lang)
+            if not notif_t:
+                logger.warning("⚠️ Notification translation to %s failed — sent in English", notif_lang)
+        else:
+            if reply_lang and reply:
+                translated_reply = translate_from_english(reply, reply_lang, sender_name=sender_name)
+                if translated_reply:
+                    reply = translated_reply
+                else:
+                    logger.warning("⚠️ Back-translation to %s failed — reply sent in English", reply_lang)
+            if notif_lang and notification:
+                translated_notification = translate_from_english(notification, notif_lang)
+                if translated_notification:
+                    notification = translated_notification
+                else:
+                    logger.warning("⚠️ Notification translation to %s failed — sent in English", notif_lang)
 
         return {"reply": reply, "notification": notification}
     finally:
