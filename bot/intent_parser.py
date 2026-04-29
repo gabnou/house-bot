@@ -394,6 +394,47 @@ def translate_from_english(text: str, target_language: str, sender_name: str = "
         return None
 
 
+def translate_from_english_batch(texts: list, target_language: str) -> list:
+    """Translate multiple English strings to target_language in a single LLM call.
+    Returns a list of translated strings in the same order as input.
+    Falls back to the original strings on any error."""
+    import json as _json
+    # Only translate non-empty entries; track original indices for re-insertion
+    indexed = [(i, t) for i, t in enumerate(texts) if t and t.strip()]
+    if not indexed:
+        return list(texts)
+    items_json = _json.dumps([t for _, t in indexed], ensure_ascii=False)
+    prompt = (
+        f"Translate each of the following English texts to {target_language}.\n"
+        "Output ONLY a JSON array of translated strings, in the same order as the input.\n"
+        "No explanations, no notes, no markdown — only the JSON array.\n"
+        "Translate ALL words including: grocery items, food items, household products, "
+        "common words, and command keywords.\n"
+        "The ONLY exceptions (keep exactly as in the original): personal names, "
+        "geographical place names, and calendar event titles.\n\n"
+        f"Texts: {items_json}\nTranslation:"
+    )
+    result = list(texts)  # start with originals as fallback
+    try:
+        response = requests.post(OLLAMA_URL, json={
+            "model": MODEL,
+            "prompt": prompt,
+            "stream": False,
+            "options": {"temperature": 0.1},
+        }, timeout=90)
+        raw = response.json().get("response", "").strip()
+        logger.debug("🌐 translate_from_english_batch raw → %s", raw)
+        match = re.search(r'\[.*\]', raw, re.DOTALL)
+        if match:
+            translated = _json.loads(match.group())
+            for (orig_idx, _), translated_text in zip(indexed, translated):
+                if translated_text and isinstance(translated_text, str):
+                    result[orig_idx] = translated_text.strip().strip('"')
+    except Exception as e:
+        logger.warning("⚠️ translate_from_english_batch error: %s — using originals", e)
+    return result
+
+
 def validate_transcription(text: str) -> bool:
     """Ask the LLM if a Whisper transcription is coherent speech.
     Returns True (valid) on any doubt or error, so we never silently drop real messages."""
