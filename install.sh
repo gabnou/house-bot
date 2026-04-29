@@ -306,9 +306,25 @@ fi
 # Start HouseBot (FastAPI + Bridge + Scheduler)
 _info "Starting HouseBot services..."
 "$PROJECT_DIR/housebot.sh" start
-sleep 2
 
-_ok "HouseBot started"
+# Wait for FastAPI to become reachable — startup can take 15-30s while
+# Whisper loads the speech-to-text model and the LLM warms up.
+_info "Waiting for the Control Panel to be ready..."
+_READY=false
+for _i in $(seq 1 60); do
+  sleep 1
+  if curl -s http://localhost:8000/admin/api/ping &>/dev/null; then
+    _READY=true
+    break
+  fi
+done
+
+if [[ "$_READY" == "true" ]]; then
+  _ok "HouseBot started"
+else
+  _warn "Control Panel did not respond within 60s — it may still be loading."
+  _warn "Check logs/fastapi.log if the page does not open."
+fi
 
 # ── Done ─────────────────────────────────────────────────────────────────────
 echo
