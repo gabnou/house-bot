@@ -55,18 +55,35 @@ Incoming message
  pre_route()  ── identity/help regex only (no LLM) ──►  action dict
       │ (miss)
       ▼
- language detection + translation (LLM + user context, only if non-English)
-      │
+ Language strategy (3 paths, checked in order):
+   ├─ USER_LANGUAGE not set      → detect_language() (LLM)
+   │                                └─ non-English + medium/high confidence → translate_to_english()
+   ├─ USER_LANGUAGE = non-English → translate_to_english() directly (no LLM detection)
+   └─ USER_LANGUAGE = English     → skip detection and translation entirely
+      │ after translation: re-run pre_route() on translated text
+      │ (miss)
       ▼
- detect_category()     ── keyword/fuzzy match (first pass)
- or classify_intent_category()  ── embedding cosine similarity (fast path)
-                                    └── LLM semantic fallback (if embedding unclear)
+ detect_category()     ── keyword/fuzzy match (first word only)
+      │ (no match)
+      ▼
+ classify_intent_category()
+   ├─ fast path: _classify_by_embedding() — cosine similarity vs anchors (nomic-embed-text)
+   └─ fallback: LLM classification (only if embedding score < 0.50)
       │ prepends detected category keyword
       ▼
  parse_intent()  ── LLM call → JSON {"action": "...", ...}
       │            user context injected into the prompt
+      │
+      │ (if action="error" AND USER_LANGUAGE set)
+      ▼
+ Language error fallback:
+   ├─ detected English       → re-process original text without translation
+   ├─ detected USER_LANGUAGE → genuine parse error, keep current response
+   └─ detected third language → politely reject
+      │
       ▼
  orchestrator.py
+      │  skill enabled/disabled check (skills_config.json)
       │  action_to_tool("weather_forecast") → "weather.forecast"
       ▼
  skills/registry  →  get("weather.forecast")  →  forecast_tool(payload)
@@ -75,7 +92,9 @@ Incoming message
  services/weather.py  →  get_weather_forecast(...)  →  string reply
       │
       ▼
- translate reply back (LLM + user context, only if non-English)
+ Back-translation:
+   ├─ reply + notification same language → translate_from_english_batch() (single LLM call)
+   └─ reply only, or different languages  → translate_from_english() per item
       │
       ▼
   {"reply": "...", "notification": "..."}
@@ -91,9 +110,9 @@ HouseBot intentionally avoids a reasoning loop (ReAct / tool-chaining). One mess
 
 | LLM call | `language` | `instructions` | When triggered |
 |---|---|---|---|
-| `detect_language()` | ✅ disambiguation hint | — | Every non-pre_route message |
-| `translate_to_english()` | — | ✅ appended as rules | Non-English messages only |
-| `translate_from_english()` | — | ✅ appended as rules | Non-English messages only |
+| `detect_language()` | ✅ disambiguation hint | — | Only when `USER_LANGUAGE` is not set |
+| `translate_to_english()` | — | — | Non-English messages only |
+| `translate_from_english()` | — | — | Non-English messages only |
 | `parse_intent()` | — | ✅ appended after skill prompt | Every non-pre_route message |
 
 For English-speaking users, only `instructions` reaches `parse_intent()` — useful for custom item mappings or naming conventions. For non-English users, both translation passes also apply the rules.

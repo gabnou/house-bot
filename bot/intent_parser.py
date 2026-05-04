@@ -191,8 +191,10 @@ def _classify_by_embedding(text: str) -> str | None:
     scores = {cat: _cosine_similarity(vec, anchor) for cat, anchor in _anchor_cache.items()}
     best = max(scores, key=scores.__getitem__)
     best_score = scores[best]
-    logger.debug("🧬 embed scores: %s → best=%s (%.3f)", scores, best, best_score)
-    return best if best_score >= 0.50 else None
+    scores_sorted = sorted(scores.values(), reverse=True)
+    margin = scores_sorted[0] - scores_sorted[1] if len(scores_sorted) >= 2 else 1.0
+    logger.debug("🧬 embed scores: %s → best=%s (%.3f, margin=%.3f)", scores, best, best_score, margin)
+    return best if best_score >= 0.50 and margin >= 0.15 else None
 
 
 def classify_intent_category(text: str) -> str | None:
@@ -296,7 +298,7 @@ def _parse_raw(raw: str) -> dict:
     return json.loads(match.group())
 
 
-def detect_language(text: str, sender_name: str = "") -> dict:
+def detect_language(text: str) -> dict:
     """Ask the LLM to detect the language of a message.
     Returns {"language": "...", "confidence": "high"|"medium"|"low"} or None on error."""
     ctx = get_user_context()
@@ -304,16 +306,15 @@ def detect_language(text: str, sender_name: str = "") -> dict:
     if ctx and ctx.get("language") and ctx["language"].lower() != "english":
         lang_hint = (
             f"\nUser language preference: The user's primary language is {ctx['language']}. "
-            f"When the text is ambiguous between {ctx['language']} and a similar language, prefer {ctx['language']}."
+            f"When the text is ambiguous between {ctx['language']} and a similar language, prefer {ctx['language']}.\n"
         )
-    sender_hint = f"\nSender: {sender_name}" if sender_name else ""
     prompt = (
         "Detect the language of the following text. "
         "Respond ONLY with a valid JSON object with two fields:\n"
         '- "language": the full English name of the language (e.g. "Spanish", "Italian", "French", "German").\n'
         '- "confidence": "high", "medium", or "low".\n'
         "If the text is in English, respond with {\"language\": \"English\", \"confidence\": \"high\"}.\n\n"
-        f"{lang_hint}{sender_hint}\nText: \"{text}\"\nResponse:"
+        f"{lang_hint}Text: \"{text}\"\nResponse:"
     )
     try:
         response = requests.post(OLLAMA_URL, json={
@@ -330,21 +331,13 @@ def detect_language(text: str, sender_name: str = "") -> dict:
         return None
 
 
-def translate_to_english(text: str, source_language: str, sender_name: str = "") -> str | None:
+def translate_to_english(text: str, source_language: str) -> str | None:
     """Translate text from a detected language to English using the LLM."""
-    ctx = get_user_context()
-    user_rules = ""
-    if ctx and ctx.get("instructions", "").strip():
-        sender_line = f"Sender: {sender_name}\n" if sender_name else ""
-        user_rules = (
-            f"\nUser-defined rules (follow these when translating):\n{sender_line}{ctx['instructions'].strip()}\n"
-        )
     prompt = (
         f"Translate the following {source_language} text to English. "
         "Respond ONLY with the English translation, nothing else. "
         "Translate ALL words including food items, grocery items, household products, and common words. "
-        "The ONLY exceptions (keep exactly as in the original): personal names (people's names), geographical place names, and calendar event titles."
-        f"{user_rules}\n\n"
+        "The ONLY exceptions (keep exactly as in the original): personal names (people's names), geographical place names, and calendar event titles.\n\n"
         f"Text: \"{text}\"\nTranslation:"
     )
     try:
@@ -362,21 +355,13 @@ def translate_to_english(text: str, source_language: str, sender_name: str = "")
         return None
 
 
-def translate_from_english(text: str, target_language: str, sender_name: str = "") -> str | None:
+def translate_from_english(text: str, target_language: str) -> str | None:
     """Translate an English response to the target language using the LLM."""
-    ctx = get_user_context()
-    user_rules = ""
-    if ctx and ctx.get("instructions", "").strip():
-        sender_line = f"Sender: {sender_name}\n" if sender_name else ""
-        user_rules = (
-            f"\nUser-defined rules (follow these when translating):\n{sender_line}{ctx['instructions'].strip()}\n"
-        )
     prompt = (
         f"Translate the following English text to {target_language}. "
         "Output ONLY the translated text — no explanations, no notes, no comments, no parenthetical remarks, no quotation marks around the output. "
         "Translate ALL words including: grocery items, food items, household products, common words, and command keywords. "
-        "The ONLY exceptions (keep exactly as in the original): personal names (people's names), geographical place names, and calendar event titles."
-        f"{user_rules}\n\n"
+        "The ONLY exceptions (keep exactly as in the original): personal names (people's names), geographical place names, and calendar event titles.\n\n"
         f"Text:\n{text}\n\nTranslation:"
     )
     try:

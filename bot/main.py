@@ -187,7 +187,7 @@ async def handle_message(msg: Message):
             configured_lang = os.getenv("USER_LANGUAGE", "").strip()
             if configured_lang and configured_lang.lower() != "english":
                 logger.debug("🌐 Using configured language: %s", configured_lang)
-                translated = translate_to_english(text, configured_lang, sender_name=sender_name)
+                translated = translate_to_english(text, configured_lang)
                 if translated:
                     logger.info("🌐 Translated %s→English: %s", configured_lang, translated)
                     detected_lang = configured_lang
@@ -197,13 +197,13 @@ async def handle_message(msg: Message):
                         logger.debug("⚡ pre_route match (post-translation): %s", intent)
             elif not configured_lang:
                 # No language configured: fall back to LLM-based detection
-                lang_info = detect_language(text, sender_name=sender_name)
+                lang_info = detect_language(text)
                 lang = lang_info.get("language", "").strip() if lang_info else ""
                 confidence = lang_info.get("confidence", "low").strip().lower() if lang_info else "low"
 
                 if lang and lang.lower() != "english" and confidence in ("high", "medium"):
                     logger.info("🌐 Detected language: %s (%s confidence) — translating...", lang, confidence)
-                    translated = translate_to_english(text, lang, sender_name=sender_name)
+                    translated = translate_to_english(text, lang)
                     if translated:
                         logger.info("🌐 Translated to English: %s", translated)
                         detected_lang = lang
@@ -233,7 +233,7 @@ async def handle_message(msg: Message):
                 # - Detected other     → ask user to write in USER_LANGUAGE or English
                 if intent.get("action") == "error" and configured_lang and configured_lang.lower() != "english":
                     logger.info("🌐 parse_intent error with USER_LANGUAGE set — running language fallback")
-                    fallback_info = detect_language(text, sender_name=sender_name)
+                    fallback_info = detect_language(text)
                     fallback_lang = fallback_info.get("language", "").strip() if fallback_info else ""
                     if fallback_lang and fallback_lang.lower() == "english":
                         # Message was in English — re-process without translation
@@ -282,27 +282,21 @@ async def handle_message(msg: Message):
                     reply = (
                         f"🤖 *{WHATSAPP_APPNAME} — What I can do*\n\n"
                         "🛒 *Shopping list*\n"
+                        "  show me the list\n"
                         "  add milk and eggs\n"
                         "  add aspirin\n"
                         "  I bought milk\n"
                         "  remove bread\n"
-                        "  what's missing?\n"
-                        "  clear the list\n\n"
                         "🌤️ *Weather*\n"
-                        "  weather in Barcelona\n"
-                        "  weather now\n"
-                        "  weather now in Milan\n"
-                        "  forecast next 4 days\n"
-                        "  forecast next hours\n"
-                        "  forecast next 6 hours in New York\n"
-                        "  forecast\n"
-                        "  forecast London\n\n"
+                        "  weather Today\n"
+                        "  forecast next 3 days\n"
+                        "  forecast next 3 days in Milan\n"
+                        "  forecast next 6 hours\n"
+                        "  forecast next 12 hours in New York\n"
                         "📅 *Calendar*\n"
                         "  what do I have today?\n"
                         "  this week\n"
                         "  events in April\n"
-                        "  events from the 5th to the 20th of April\n"
-                        "  details dinner with John\n"
                         "  add dinner with John friday 28th at 9pm\n"
                         "  delete dinner with John\n"
                         "  move doctor visit from April 5th to April 6th at 11am\n\n"
@@ -340,7 +334,7 @@ async def handle_message(msg: Message):
                 logger.warning("⚠️ Notification translation to %s failed — sent in English", notif_lang)
         else:
             if reply_lang and reply:
-                translated_reply = translate_from_english(reply, reply_lang, sender_name=sender_name)
+                translated_reply = translate_from_english(reply, reply_lang)
                 if translated_reply:
                     reply = translated_reply
                 else:

@@ -36,25 +36,46 @@ Incoming message
  pre_route()  ── identity/help regex only (no LLM) ──►  action dict
       │ (miss)
       ▼
- language detection + translation (LLM, only if non-English)
-      │
+ Language strategy (3 paths, checked in order):
+   ├─ USER_LANGUAGE not set      → detect_language() (LLM)
+   │                                └─ non-English + medium/high confidence → translate_to_english()
+   ├─ USER_LANGUAGE = non-English → translate_to_english() directly (no LLM detection)
+   └─ USER_LANGUAGE = English     → skip detection and translation entirely
+      │ after translation: re-run pre_route() on the translated text
+      │ (miss)
       ▼
- detect_category() / classify_intent_category()  ──► prepend keyword
-      │
+ detect_category()  ── keyword/fuzzy match on first word ──► category found
+      │ (no match)
       ▼
- parse_intent()  ── LLM call → JSON {"action": "...", ...} ──►  action dict
+ classify_intent_category()
+   ├─ fast path: _classify_by_embedding() — cosine similarity vs preloaded anchor vectors
+   └─ fallback:  LLM classification (only if embedding score < 0.50)
+      │ prepends detected category keyword to text
+      ▼
+ parse_intent()  ── LLM call → JSON {"action": "...", ...}
+      │            category-specific prompt + user context injected
+      │
+      │ (if action="error" AND USER_LANGUAGE set)
+      ▼
+ Language error fallback:
+   ├─ detected English   → re-process original text without translation
+   ├─ detected USER_LANGUAGE → genuine parse error, keep current response
+   └─ detected third language → politely reject (ask user to write in USER_LANGUAGE or English)
       │
       ▼
  orchestrator.py
-      │  action_to_tool("weather_forecast") → "weather.forecast"
-      ▼
+   │  skill enabled/disabled check (bot/skills/skills_config.json)
+   │  action_to_tool("weather_forecast") → "weather.forecast"
+   ▼
  skills/registry  →  get("weather.forecast")  →  forecast_tool(payload)
       │
       ▼
  services/weather.py  →  get_weather_forecast(...)  →  string reply
       │
       ▼
- translate reply back (LLM, only if non-English)
+ Back-translation:
+   ├─ reply + notification same language → translate_from_english_batch() (single LLM call)
+   └─ reply only, or different languages  → translate_from_english() per item
       │
       ▼
   {"reply": "...", "notification": "..."}
@@ -83,13 +104,18 @@ ui/build/     → production bundle served statically by FastAPI at /
 - **Whisper model** loaded at startup via lifespan event; auto-detects language (no hardcoded `language=` param)
 
 ### `bot/intent_parser.py` — LLM-Based Intent Recognition
-- `detect_category(text)` — keyword/fuzzy match for `shopping`, `weather`, `calendar` (returns `None` if no match)
-- `classify_intent_category(text)` — LLM fallback to classify translated text into one of the three categories by semantic affinity
-- `parse_intent(text)` — routes to category-specific LLM prompt, returns JSON dict with `action` + params
+- `detect_category(text)` — keyword/fuzzy match for `shopping`, `weather`, `calendar` on the first word (returns `None` if no match)
+- `classify_intent_category(text)` — first tries `_classify_by_embedding()` (cosine similarity vs pre-computed anchor vectors); falls back to LLM only if embedding score < 0.50
+- `_classify_by_embedding(text)` — embeds text via `nomic-embed-text`, compares against per-domain mean anchor vectors; returns best category if score ≥ 0.50, else `None`
+- `preload_embed_anchors()` — pre-computes mean anchor vectors for all domains at startup (background thread); idempotent
+- `warmup_llm()` — sends a minimal prompt to Ollama at startup to pre-load the LLM into RAM (background thread; important on CPU-only hardware)
+- `get_user_context()` — reads `bot/user_context.json` + `USER_LANGUAGE` env var; `_user_context_override` allows per-request override (used by Interactive Tests)
+- `parse_intent(text)` — routes to category-specific LLM prompt, returns JSON dict with `action` + params; user context injected into the prompt if set
 - **LLM prompts**: each skill registers its own prompt via `register_prompt()` in `skills/`
-- `detect_language(text)` — returns `{"language": "...", "confidence": "high|medium|low"}`
-- `translate_to_english(text, source_language)` / `translate_from_english(text, target_language)` — LLM translation
-- `validate_transcription(text)` — checks if Whisper output is coherent (fail-open)
+- `detect_language(text)` — returns `{"language": "...", "confidence": "high|medium|low"}`; only called when `USER_LANGUAGE` is not set; uses `language` hint from user context but not `instructions`
+- `translate_to_english(text, source_language)` / `translate_from_english(text, target_language)` — LLM translation; no user context injected (instructions are for intent parsing only, not translation)
+- `translate_from_english_batch(texts, target_language)` — translates multiple strings in a single LLM call; falls back to originals on error; no user context injected
+- `validate_transcription(text)` — checks if Whisper output is coherent speech (fail-open)
 - All LLM calls go to `OLLAMA_URL` with model `MODEL` (from env)
 
 ### `bot/orchestrator.py` — Skill Dispatcher
@@ -214,12 +240,17 @@ All endpoints are under `/admin/api/` and registered on the FastAPI app in `bot/
 ## Key Patterns
 
 ### Intent Detection Pipeline
-1. `pre_route(text)` — regex for **identity** and **help** only. Returns `None` for all other input. Domain-specific patterns (shopping, calendar, weather) were removed — they caused cross-domain false positives, especially on translated text.
-2. `detect_language()` → if non-English, `translate_to_english()` → re-run `pre_route()` on the translated text
-3. `detect_category(text)` — keyword/fuzzy match on first word (`shopping`, `calendar`, `weather`)
-4. If no category: `classify_intent_category(text)` — LLM semantic fallback; prepends the detected category keyword
-5. `parse_intent(text)` — LLM call with the category-specific prompt
-6. `translate_from_english(reply, lang)` — translate reply back if the original was non-English
+1. `pre_route(text)` — regex for **identity** and **help** only. Returns `None` for all other input. Domain-specific patterns were removed — they caused cross-domain false positives, especially on translated text.
+2. **Language strategy (3 paths)**:
+   - `USER_LANGUAGE` not set → `detect_language()` (LLM) → if non-English with medium/high confidence: `translate_to_english()`
+   - `USER_LANGUAGE` = non-English → `translate_to_english()` directly (no LLM detection overhead)
+   - `USER_LANGUAGE` = English → skip detection and translation entirely
+   - After any translation: re-run `pre_route()` on the translated text
+3. `detect_category(text)` — keyword/fuzzy match on the **first word** only (`shopping`, `calendar`, `weather`)
+4. If no category: `classify_intent_category(text)` — first tries **embedding cosine similarity** against pre-computed domain anchor vectors (fast, no LLM); LLM semantic classification only if embedding score < 0.50. Prepends the detected category keyword.
+5. `parse_intent(text)` — LLM call with the category-specific prompt; **user context** (`instructions` from `user_context.json`) injected into the prompt if set
+6. **Error fallback** — if `parse_intent` returns `action: error` and `USER_LANGUAGE` is set: detect actual language → re-process if English, reject politely if third language, keep error if USER_LANGUAGE
+7. **Back-translation** — `translate_from_english_batch()` (single LLM call) when reply + notification need the same language; `translate_from_english()` individually otherwise
 
 ### Why No LLM Loop
 HouseBot intentionally avoids a reasoning loop (ReAct / tool-chaining). One message → one LLM call → one tool → one reply. This is the right trade-off for a household bot with simple, direct requests: it keeps latency low, output deterministic, and the system easy to debug. Multi-step agentic chains would add hallucination risk and complexity without benefit for this use case.
