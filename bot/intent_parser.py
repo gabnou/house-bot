@@ -194,7 +194,7 @@ def _classify_by_embedding(text: str) -> str | None:
     scores_sorted = sorted(scores.values(), reverse=True)
     margin = scores_sorted[0] - scores_sorted[1] if len(scores_sorted) >= 2 else 1.0
     logger.debug("🧬 embed scores: %s → best=%s (%.3f, margin=%.3f)", scores, best, best_score, margin)
-    return best if best_score >= 0.50 and margin >= 0.15 else None
+    return best if best_score >= 0.50 and margin >= 0.10 else None
 
 
 def classify_intent_category(text: str) -> str | None:
