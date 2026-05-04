@@ -1,6 +1,7 @@
 import sys
 import logging
 import os
+import random
 from pathlib import Path
 
 import fcntl
@@ -91,7 +92,7 @@ def generate_morning_quote() -> str:
             "Example: «The miracle isn't that I finished. The miracle is that I had the courage to start.» — John Bingham"
         ),
         "stream": False,
-        "options": {"temperature": 0.9}
+        "options": {"temperature": 0.9, "seed": random.randint(1, 2**31)}
     }
     try:
         response = requests.post(OLLAMA_URL, json=payload, timeout=60)
