@@ -70,18 +70,25 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.RELEASES_PAT }}
           TAG: ${{ github.ref_name }}
+          TARGET_TAG: housebot-latest
         run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "⚠️  RELEASES_PAT secret not configured."
+            echo "Set RELEASES_PAT in repository secrets to enable auto-publish."
+            exit 0
+          fi
+
           # Also ship a generic housebot.zip so the install script URL stays stable
           cp "${ZIP_NAME}" "housebot.zip"
 
-          # Create the release in the public repo; if it already exists, skip creation
-          gh release create "${TAG}" \
+          # Publish to a stable tag in the public repo to avoid propagating source tags
+          gh release create "${TARGET_TAG}" \
             --repo gabnou/house-bot-releases \
-            --title "${TAG}" \
+            --title "HouseBot latest" \
             --notes "See the [full release notes](https://github.com/gabnou/house-bot/releases/tag/${TAG}) in the source repository." \
             "${ZIP_NAME}" \
             "housebot.zip" \
-          || gh release upload "${TAG}" \
+          || gh release upload "${TARGET_TAG}" \
             --repo gabnou/house-bot-releases \
             --clobber \
             "${ZIP_NAME}" \
