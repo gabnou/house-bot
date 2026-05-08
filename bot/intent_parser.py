@@ -444,21 +444,32 @@ def validate_transcription(text: str) -> bool:
         return True
 
 
-def parse_intent(text: str, sender_name: str = "") -> dict:
+def parse_intent(text: str, sender_name: str = "", original_text: str | None = None) -> dict:
     from skills.registry import get_prompt
     category = detect_category(text)
     prompt_fn = get_prompt(category) if category else None
     base_prompt = prompt_fn() if prompt_fn else get_system_prompt()
     ctx = get_user_context()
+    # When the message was translated and the category is calendar, instruct the LLM to
+    # preserve the event title verbatim from the original (untranslated) text so that
+    # delete/edit/details lookups match the stored event summary on Google Calendar.
+    title_note = ""
+    if original_text and category == "calendar":
+        title_note = (
+            f"\n[Title extraction note: The following message was translated from another language. "
+            f"Original text: \"{original_text}\". "
+            f"For the \"title\" field (and \"new_title\" if applicable) use the event name "
+            f"EXACTLY as it appears in the original text — do NOT use the translated version.]\n"
+        )
     if ctx and ctx.get("instructions", "").strip():
         sender_line = f"Sender: {sender_name}\n" if sender_name else ""
         ctx_block = (
             f"\n[User-defined context — always follow these instructions]\n"
             f"{sender_line}{ctx['instructions'].strip()}\n"
         )
-        prompt_text = f"{base_prompt}{ctx_block}\nMessage: \"{text}\"\nResponse:"
+        prompt_text = f"{base_prompt}{ctx_block}{title_note}\nMessage: \"{text}\"\nResponse:"
     else:
-        prompt_text = f"{base_prompt}\n\nMessage: \"{text}\"\nResponse:"
+        prompt_text = f"{base_prompt}{title_note}\n\nMessage: \"{text}\"\nResponse:"
 
     payload = {
         "model": MODEL,

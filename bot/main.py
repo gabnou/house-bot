@@ -223,7 +223,10 @@ async def handle_message(msg: Message):
 
                 from intent_parser import MODEL as _active_model
                 logger.debug("🤖 Sending to Ollama (%s): '%s'", _active_model, effective_text)
-                intent = parse_intent(effective_text, sender_name=sender_name)
+                # Pass original (untranslated) text when translation occurred so that
+                # calendar title fields are extracted verbatim from the original message.
+                intent = parse_intent(effective_text, sender_name=sender_name,
+                                      original_text=text if detected_lang else None)
 
                 # Language enforcement fallback: if parse_intent failed and USER_LANGUAGE is
                 # configured, detect the actual language of the original text to decide

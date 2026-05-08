@@ -174,6 +174,7 @@ Available actions:
 
 Action names must use underscores, never hyphens or spaces (e.g. calendar_add, NOT calendar-add or calendar add).
 IMPORTANT: Words like "appointment", "event", "reminder", "meeting" are generic and are NOT part of the title. The title is the specific event name (e.g. "concert of Pixies", "dinner with Mark", "doctor visit").
+IMPORTANT: The message you receive may be an English translation of a message originally written in another language. If a [Title extraction note] block is present below, you MUST use the event name EXACTLY as stated there for the "title" field (and "new_title" if applicable) — do NOT use the translated version of the title.
 
 Examples:
 Message: "calendar"

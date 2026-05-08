@@ -213,6 +213,32 @@ def add_event(title: str, date: str, start_time: str = None,
         return f"⚠️ Error adding event: {e}"
 
 
+def _find_event_fuzzy(service, calendar_id: str, title: str, days: int = 30):
+    """Fuzzy-match an event by title when an exact Google search returns nothing.
+    Fetches all events in the next `days` days and returns the best matching event
+    dict (SequenceMatcher ratio >= 0.55), or None if no candidate is close enough."""
+    from difflib import SequenceMatcher
+    now = datetime.utcnow()
+    end = now + timedelta(days=days)
+    events = service.events().list(
+        calendarId=calendar_id,
+        timeMin=now.isoformat() + 'Z',
+        timeMax=end.isoformat() + 'Z',
+        singleEvents=True,
+        orderBy='startTime',
+    ).execute().get('items', [])
+    if not events:
+        return None
+    title_lower = title.lower()
+    best_event, best_ratio = None, 0.0
+    for e in events:
+        summary = e.get('summary', '').lower()
+        ratio = SequenceMatcher(None, title_lower, summary).ratio()
+        if ratio > best_ratio:
+            best_ratio, best_event = ratio, e
+    return best_event if best_ratio >= 0.55 else None
+
+
 def delete_event(title: str, date: str = None) -> str:
     """Delete an event by title (and optionally date)."""
     try:
@@ -232,9 +258,11 @@ def delete_event(title: str, date: str = None) -> str:
         ).execute().get('items', [])
 
         if not events:
-            return f"⚠️ No event found with title *{title}*."
-
-        event = events[0]
+            event = _find_event_fuzzy(service, calendar_id, title)
+            if not event:
+                return f"⚠️ No event found with title *{title}*."
+        else:
+            event = events[0]
         service.events().delete(calendarId=calendar_id, eventId=event['id']).execute()
         return f"🗑️ Event *{event.get('summary', title)}* deleted."
     except Exception as e:
@@ -261,9 +289,11 @@ def edit_event(title: str, new_title: str = None, new_date: str = None,
         ).execute().get('items', [])
 
         if not events:
-            return f"⚠️ No event found with title *{title}*."
-
-        event = events[0]
+            event = _find_event_fuzzy(service, calendar_id, title)
+            if not event:
+                return f"⚠️ No event found with title *{title}*."
+        else:
+            event = events[0]
 
         if new_title:
             event['summary'] = new_title
@@ -309,9 +339,11 @@ def event_details(title: str) -> str:
         ).execute().get('items', [])
 
         if not events:
-            return f"⚠️ No event found with title *{title}*."
-
-        e = events[0]
+            e = _find_event_fuzzy(service, calendar_id, title)
+            if not e:
+                return f"⚠️ No event found with title *{title}*."
+        else:
+            e = events[0]
 
         # Time
         start_str = e['start'].get('dateTime', e['start'].get('date', ''))
